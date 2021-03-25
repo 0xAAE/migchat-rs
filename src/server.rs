@@ -139,9 +139,9 @@ impl ChatRoomService for ChatRoomImpl {
         request: tonic::Request<RequestUsers>,
     ) -> Result<tonic::Response<Self::GetUsersStream>, tonic::Status> {
         if let Ok(mut listeners) = self.users_listeners.lock() {
-            let (listener, mut notifier) = mpsc::channel(4);
-            listeners.push(listener);
-            // start permanent listener
+            let (listener, mut notifier) = mpsc::channel::<Arc<User>>(4);
+
+            // start permanent listener, streaming data producer
             let (tx, rx) = mpsc::channel(4);
             tokio::spawn(async move {
                 while let Some(user) = notifier.recv().await {
@@ -152,12 +152,23 @@ impl ChatRoomService for ChatRoomImpl {
                     tx.send(Ok(update)).await.unwrap();
                 }
             });
-            // send existant users
+
+            // send existing users
             if let Ok(users) = self.users.read() {
+                for user in users.values() {
+                    let u = Arc::new(user.clone());
+                    let tx = listener.clone();
+                    tokio::spawn(async move {
+                        let _ = tx.send(u).await;
+                    });
+                }
             } else {
                 // failed read-locking users
             }
-            // start stream
+
+            listeners.push(listener);
+
+            // start streaming activity, data consumer
             Ok(Response::new(Box::pin(
                 tokio_stream::wrappers::ReceiverStream::new(rx),
             )))
