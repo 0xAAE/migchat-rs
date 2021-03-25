@@ -1,0 +1,26 @@
+[package]
+name = "migchat"
+version = "0.1.0"
+authors = ["Alexander Avramenko <avramenko.a@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[[bin]]
+name = "migchat-server"
+path = "src/server.rs"
+
+[[bin]]
+name = "migchat-client"
+path = "src/client.rs"
+
+[dependencies]
+tonic = "0.4"
+prost = "0.7"
+tokio = { version = "1.4", features = ["macros", "rt-multi-thread"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+uuid = { version = "0.8", features = ["serde", "v4"] }
+futures = "0.3"
+
+[build-dependencies]
+tonic-build = "0.4"

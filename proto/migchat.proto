@@ -1,0 +1,114 @@
+syntax = "proto3";
+//import "google/protobuf/empty.proto";
+
+option java_multiple_files = true;
+option java_package = "com.toisystems.migchat";
+option java_outer_classname = "MiGChatProto";
+option objc_class_prefix = "MGC";
+
+package migchat;
+
+// The service definition.
+service ChatRoomService {
+  // Sends a reqistration request
+  rpc Register (UserInfo) returns (Registration) {}
+  // Sends a login, gets invitations. The first invitation has chat_id = 0 and own user_id
+  rpc Login (Registration) returns (stream Invitation) {}
+  // Sends a logout request using the first invitation from the server
+  rpc Logout (Invitation) returns (Result) {}
+  // Starts chating
+  rpc StartChating(stream Post) returns (stream Post) {}
+  // Asks for contacts list
+  rpc GetUsers(RequestUsers) returns (stream UpdateUsers) {}
+  // Asks for chats list
+  rpc GetChats(RequestChats) returns (stream UpdateChats) {}
+
+  // Creates new chat
+  rpc CreateChat(ChatInfo) returns (Chat) {}
+  // Invites user to chat
+  rpc InviteUser(Invitation) returns (Result) {}
+  // Enters the chat
+  rpc EnterChat(Chat) returns (Result) {}
+  // Leaves active chat
+  rpc LeaveChat(Chat) returns (Result) {}
+}
+
+message UUID {
+  string value = 1;
+}
+
+message UserInfo {
+  string name = 1;
+  string short_name = 2;
+}
+
+message Registration {
+    UUID uuid = 1;
+}
+
+message RequestUsers {
+    bool filter_alive = 1;
+}
+
+message UpdateUsers {
+    repeated User added = 1;
+    repeated User gone = 2;
+}
+
+message User {
+    uint32 session_id = 1;
+    string name = 2;
+    string short_name = 3;
+}
+
+message RequestChats {
+    bool filter_alive = 1;
+}
+
+message UpdateChats {
+    repeated Chat added = 1;
+    repeated Chat gone = 2;
+}
+
+message ChatInfo {
+    bool permanent = 1;
+    string description = 2;
+    bool auto_enter = 3;
+    repeated User required = 4;
+    repeated User optional = 5;
+}
+
+message Chat {
+    uint32 id = 1;
+}
+
+message Invitation {
+    uint32 chat_id = 1;
+    uint32 session_id = 2;
+}
+
+message Result {
+    bool ok = 1;
+    string description = 2;
+}
+
+enum AttachmentType {
+    None = 0;
+    Image = 1;
+    Audio = 2;
+    Video = 3;
+    File = 4;
+}
+
+message Attachment {
+    AttachmentType type = 1;
+    string name = 2;
+    bytes content = 3;
+}
+
+message Post {
+    uint32 chat_id = 1;
+    uint32 contact_id = 2;
+    string text = 3;
+    repeated Attachment attachments = 4;
+}
