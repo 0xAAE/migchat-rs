@@ -13,7 +13,7 @@ service ChatRoomService {
   // Sends a reqistration request
   rpc Register (UserInfo) returns (Registration) {}
   // Sends a login, gets invitations. The first invitation has chat_id = 0 and own user_id
-  rpc Login (Registration) returns (stream Invitation) {}
+  rpc Login (Registration) returns (stream Event) {}
   // Sends a logout request using the first invitation from the server
   rpc Logout (Invitation) returns (Result) {}
   // Starts chating
@@ -85,6 +85,17 @@ message Chat {
 message Invitation {
     uint32 chat_id = 1;
     uint32 session_id = 2;
+}
+
+message Session {
+    uint32 id = 1;
+}
+
+message Event {
+    oneof payload {
+        Session login = 1;
+        Invitation invitation = 2;
+    }
 }
 
 message Result {

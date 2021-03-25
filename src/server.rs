@@ -1,37 +1,71 @@
-use tonic::{transport::Server, Request, Response, Status};
-
 use futures::{Stream, StreamExt};
-use migchat::chat_room_service_server::{ChatRoomService, ChatRoomServiceServer};
-use migchat::{
-    Chat, ChatInfo, Invitation, Post, Registration, RequestChats, RequestUsers,
-    Result as RpcResult, UpdateChats, UpdateUsers, UserInfo,
-};
+use std::collections::HashMap;
 use std::pin::Pin;
+use std::sync::{
+    atomic::{AtomicU32, Ordering},
+    Arc, Mutex, RwLock,
+};
 use tokio::sync::mpsc;
+use tonic::{transport::Server, Request, Response, Status};
 use uuid::Uuid;
 
-pub mod migchat {
-    tonic::include_proto!("migchat"); // The string specified here must match the proto package name
-}
+mod proto;
+mod user;
+
+use proto::chat_room_service_server::{ChatRoomService, ChatRoomServiceServer};
+use proto::{
+    event::Payload, Chat, ChatInfo, Event, Invitation, Post, Registration, RequestChats,
+    RequestUsers, Result as RpcResult, Session, UpdateChats, UpdateUsers, UserInfo,
+};
+use user::User;
 
 #[derive(Debug, Default)]
-pub struct ChatRoomImpl {}
+pub struct ChatRoomImpl {
+    next_id: AtomicU32,
+    users: RwLock<HashMap<proto::Uuid, User>>,
+    users_listeners: Mutex<Vec<mpsc::Sender<Arc<User>>>>,
+}
+
+impl ChatRoomImpl {
+    fn notify_added(&self, u: Arc<User>) {
+        if let Ok(mut locked) = self.users_listeners.lock() {
+            locked.retain(|l| {
+                // return false to remove listener from the vec!
+                l.blocking_send(u.clone()).is_ok()
+            });
+        }
+    }
+}
 
 #[tonic::async_trait]
 impl ChatRoomService for ChatRoomImpl {
     #[doc = " Sends a reqistration request"]
     async fn register(&self, request: Request<UserInfo>) -> Result<Response<Registration>, Status> {
         println!("register: {:?}", request);
-        let uuid = migchat::Uuid {
+        let uuid_val = proto::Uuid {
             value: format!("{}", Uuid::new_v4()),
         };
-        let reply = Registration { uuid: Some(uuid) };
-        Ok(Response::new(reply)) // Send back our formatted greeting
+        if let Ok(mut locked) = self.users.write() {
+            let _ = locked.insert(
+                uuid_val.clone(),
+                User {
+                    id: self.next_id.fetch_add(1, Ordering::SeqCst),
+                    name: request.get_ref().name.to_string(),
+                    short_name: request.get_ref().short_name.to_string(),
+                },
+            );
+            // Send back our formatted greeting
+            Ok(Response::new(Registration {
+                uuid: Some(uuid_val),
+            }))
+        } else {
+            Err(tonic::Status::internal("no access to registration info"))
+        }
     }
 
     #[doc = "Server streaming response type for the Login method."]
     type LoginStream =
-        Pin<Box<dyn Stream<Item = Result<Invitation, tonic::Status>> + Send + Sync + 'static>>;
+        Pin<Box<dyn Stream<Item = Result<Event, tonic::Status>> + Send + Sync + 'static>>;
 
     #[doc = " Sends a login"]
     async fn login(
@@ -41,19 +75,34 @@ impl ChatRoomService for ChatRoomImpl {
         // create stream of invitations, the first is from server to logged user
         println!("login: {:?}", request);
 
-        let (tx, rx) = mpsc::channel(4);
+        if let Ok(locked) = self.users.read() {
+            if let Some(ref uuid) = request.get_ref().uuid {
+                if let Some(user) = locked.get(uuid) {
+                    // ok, user found
+                    let (tx, rx) = mpsc::channel(4);
 
-        tokio::spawn(async move {
-            let invitation = Invitation {
-                chat_id: 0,
-                session_id: 1,
-            };
-            tx.send(Ok(invitation)).await.unwrap();
-        });
+                    let id = user.id;
+                    tokio::spawn(async move {
+                        let invitation_event = Event {
+                            payload: Some(Payload::Login(Session { id })),
+                        };
+                        tx.send(Ok(invitation_event)).await.unwrap();
+                    });
 
-        Ok(Response::new(Box::pin(
-            tokio_stream::wrappers::ReceiverStream::new(rx),
-        )))
+                    Ok(Response::new(Box::pin(
+                        tokio_stream::wrappers::ReceiverStream::new(rx),
+                    )))
+                } else {
+                    // user is not registered yet
+                    Err(tonic::Status::permission_denied("user is not registered"))
+                }
+            } else {
+                // bad request: no uuid
+                Err(tonic::Status::invalid_argument("no user UUID provided"))
+            }
+        } else {
+            Err(tonic::Status::internal("no access to registration info"))
+        }
     }
 
     #[doc = " Sends a logout request using the first invitation from the server"]
@@ -89,9 +138,33 @@ impl ChatRoomService for ChatRoomImpl {
         &self,
         request: tonic::Request<RequestUsers>,
     ) -> Result<tonic::Response<Self::GetUsersStream>, tonic::Status> {
-        Err(tonic::Status::unimplemented(
-            "get_users() is not implemented yet",
-        ))
+        if let Ok(mut listeners) = self.users_listeners.lock() {
+            let (listener, mut notifier) = mpsc::channel(4);
+            listeners.push(listener);
+            // start permanent listener
+            let (tx, rx) = mpsc::channel(4);
+            tokio::spawn(async move {
+                while let Some(user) = notifier.recv().await {
+                    let update = UpdateUsers {
+                        added: vec![user.make_proto()],
+                        gone: Vec::new(),
+                    };
+                    tx.send(Ok(update)).await.unwrap();
+                }
+            });
+            // send existant users
+            if let Ok(users) = self.users.read() {
+            } else {
+                // failed read-locking users
+            }
+            // start stream
+            Ok(Response::new(Box::pin(
+                tokio_stream::wrappers::ReceiverStream::new(rx),
+            )))
+        } else {
+            // failed locking listeners
+            Err(tonic::Status::internal("no access to listeners"))
+        }
     }
 
     #[doc = "Server streaming response type for the GetChats method."]
