@@ -1,4 +1,6 @@
-use futures::{Stream, StreamExt};
+use env_logger::{fmt::TimestampPrecision, Builder, Env, Target};
+use futures::Stream; //, StreamExt};
+use log::info;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{
@@ -27,6 +29,7 @@ pub struct ChatRoomImpl {
 }
 
 impl ChatRoomImpl {
+    #[allow(dead_code)]
     fn notify_added(&self, u: Arc<User>) {
         if let Ok(mut locked) = self.users_listeners.lock() {
             locked.retain(|l| {
@@ -108,7 +111,7 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = " Sends a logout request using the first invitation from the server"]
     async fn logout(
         &self,
-        request: tonic::Request<Invitation>,
+        _request: tonic::Request<Invitation>,
     ) -> Result<tonic::Response<RpcResult>, tonic::Status> {
         Err(tonic::Status::unimplemented(
             "logout() is not implemented yet",
@@ -122,7 +125,7 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = " Starts chating"]
     async fn start_chating(
         &self,
-        request: tonic::Request<tonic::Streaming<Post>>,
+        _request: tonic::Request<tonic::Streaming<Post>>,
     ) -> Result<tonic::Response<Self::StartChatingStream>, tonic::Status> {
         Err(tonic::Status::unimplemented(
             "start_chating() is not implemented yet",
@@ -136,7 +139,7 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = " Asks for contacts list"]
     async fn get_users(
         &self,
-        request: tonic::Request<RequestUsers>,
+        _request: tonic::Request<RequestUsers>,
     ) -> Result<tonic::Response<Self::GetUsersStream>, tonic::Status> {
         if let Ok(mut listeners) = self.users_listeners.lock() {
             let (listener, mut notifier) = mpsc::channel::<Arc<User>>(4);
@@ -185,7 +188,7 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = " Asks for chats list"]
     async fn get_chats(
         &self,
-        request: tonic::Request<RequestChats>,
+        _request: tonic::Request<RequestChats>,
     ) -> Result<tonic::Response<Self::GetChatsStream>, tonic::Status> {
         Err(tonic::Status::unimplemented(
             "get_chats() is not implemented yet",
@@ -195,7 +198,7 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = " Creates new chat"]
     async fn create_chat(
         &self,
-        request: tonic::Request<ChatInfo>,
+        _request: tonic::Request<ChatInfo>,
     ) -> Result<tonic::Response<Chat>, tonic::Status> {
         Err(tonic::Status::unimplemented(
             "create_chat() is not implemented yet",
@@ -205,7 +208,7 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = " Invites user to chat"]
     async fn invite_user(
         &self,
-        request: tonic::Request<Invitation>,
+        _request: tonic::Request<Invitation>,
     ) -> Result<tonic::Response<RpcResult>, tonic::Status> {
         Err(tonic::Status::unimplemented(
             "invite_user() is not implemented yet",
@@ -215,7 +218,7 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = " Enters the chat"]
     async fn enter_chat(
         &self,
-        request: tonic::Request<Chat>,
+        _request: tonic::Request<Chat>,
     ) -> Result<tonic::Response<RpcResult>, tonic::Status> {
         Err(tonic::Status::unimplemented(
             "enter_chat() is not implemented yet",
@@ -225,7 +228,7 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = " Leaves active chat"]
     async fn leave_chat(
         &self,
-        request: tonic::Request<Chat>,
+        _request: tonic::Request<Chat>,
     ) -> Result<tonic::Response<RpcResult>, tonic::Status> {
         Err(tonic::Status::unimplemented(
             "leave_chat() is not implemented yet",
@@ -235,9 +238,14 @@ impl ChatRoomService for ChatRoomImpl {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    Builder::from_env(Env::default().default_filter_or("debug,h2=info,tower=info,hyper=info"))
+        .target(Target::Stdout)
+        .format_timestamp(Some(TimestampPrecision::Seconds))
+        .init();
+
     let addr = "0.0.0.0:50051".parse().unwrap();
     let chat_room = ChatRoomImpl::default();
-    println!("Chat room is listening on {}", addr);
+    info!("Chat room is listening on {}", addr);
 
     let svc = ChatRoomServiceServer::new(chat_room);
     Server::builder().add_service(svc).serve(addr).await?;
