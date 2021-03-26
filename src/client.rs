@@ -1,4 +1,6 @@
 // use std::error::Error;
+use clap::{App, Arg};
+use config::{Config, Environment, File};
 use env_logger::{fmt::TimestampPrecision, Builder, Env, Target};
 use log::{debug, error, info, warn};
 use tokio::sync::mpsc;
@@ -8,8 +10,51 @@ mod proto;
 use proto::chat_room_service_client::ChatRoomServiceClient;
 use proto::{event::Payload, Registration, UserInfo};
 
+const CONFIG: &str = "config";
+const CONFIG_DEF: &str = "client.toml";
+const CONFIG_ENV: &str = "MIGC";
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // commnad line
+    let matches = App::new("migchat-client")
+        .version("0.1")
+        .author("0xAAE <avramenko.a@gmail.com>")
+        .about(
+            "The MiGChat command line client. Use MIGC_* environment variables to override config file settings",
+        )
+        .arg(
+            Arg::with_name(CONFIG)
+                .short("c")
+                .long(CONFIG)
+                .value_name("FILE")
+                .help("Sets a custom config file")
+                .takes_value(true),
+        )
+        .get_matches();
+    let config_file = matches.value_of(CONFIG).unwrap_or(CONFIG_DEF);
+    info!("Using config: {}", config_file);
+
+    // config
+    let mut settings = Config::default();
+    settings
+        // Add in `./Settings.toml`
+        .merge(File::with_name(config_file))
+        .unwrap()
+        // Add in settings from the environment (with a prefix of APP)
+        // Eg.. `APP_DEBUG=1 ./target/app` would set the `debug` key
+        .merge(Environment::with_prefix(CONFIG_ENV))
+        .unwrap();
+
+    // Print out our settings (as a HashMap)
+    // println!(
+    //     "{:?}",
+    //     settings.try_into::<HashMap<String, String>>().unwrap()
+    // );
+    let name = settings.get_str("name").unwrap_or("Anonimous".to_string());
+    let short_name = settings.get_str("short_name").unwrap_or("Nemo".to_string());
+
+    // logging
     Builder::from_env(Env::default().default_filter_or("debug,h2=info,tower=info,hyper=info"))
         .target(Target::Stdout)
         .format_timestamp(Some(TimestampPrecision::Seconds))
@@ -17,10 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = ChatRoomServiceClient::connect("http://0.0.0.0:50051").await?;
 
     // register
-    let reg_info = UserInfo {
-        name: "Alexander Avramenko".to_string(),
-        short_name: "0xAAE".to_string(),
-    };
+    let reg_info = UserInfo { name, short_name };
     info!("registering as {:?}", reg_info);
     let reg_req = tonic::Request::new(reg_info);
     if let Ok(reg_res) = client.register(reg_req).await {
