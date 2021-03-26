@@ -46,67 +46,83 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(Environment::with_prefix(CONFIG_ENV))
         .unwrap();
 
-    // Print out our settings (as a HashMap)
-    // println!(
-    //     "{:?}",
-    //     settings.try_into::<HashMap<String, String>>().unwrap()
-    // );
-    let name = settings.get_str("name").unwrap_or("Anonimous".to_string());
-    let short_name = settings.get_str("short_name").unwrap_or("Nemo".to_string());
-
     // logging
     Builder::from_env(Env::default().default_filter_or("debug,h2=info,tower=info,hyper=info"))
         .target(Target::Stdout)
         .format_timestamp(Some(TimestampPrecision::Seconds))
         .init();
-    let mut client = ChatRoomServiceClient::connect("http://0.0.0.0:50051").await?;
 
-    // register
-    let reg_info = UserInfo { name, short_name };
-    info!("registering as {:?}", reg_info);
-    let reg_req = tonic::Request::new(reg_info);
-    if let Ok(reg_res) = client.register(reg_req).await {
-        if let Some(own_uuid) = reg_res.into_inner().uuid {
-            // login
-            let (tx, mut rx) = mpsc::channel(4);
-            tokio::spawn(async move {
-                let reg_info = Registration {
-                    uuid: Some(own_uuid),
-                };
-                if let Ok(response) = client.login(tonic::Request::new(reg_info)).await {
-                    let mut stream = response.into_inner();
-                    while let Some(event) = stream.message().await.ok().flatten() {
-                        if let Some(payload) = event.payload {
-                            match payload {
-                                Payload::Login(data) => {
-                                    let _ = tx.send(data).await;
+    // launch client
+    let client = MigchatClient::new(&settings);
+    client.launch().await
+}
+
+struct MigchatClient {
+    name: String,
+    short_name: String,
+}
+
+impl MigchatClient {
+    fn new(settings: &Config) -> Self {
+        let name = settings.get_str("name").unwrap_or("Anonimous".to_string());
+        let short_name = settings.get_str("short_name").unwrap_or("Nemo".to_string());
+        MigchatClient { name, short_name }
+    }
+
+    async fn launch(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let mut client = ChatRoomServiceClient::connect("http://0.0.0.0:50051").await?;
+
+        // register
+        let reg_info = UserInfo {
+            name: self.name.clone(),
+            short_name: self.short_name.clone(),
+        };
+        info!("registering as {:?}", reg_info);
+        let reg_req = tonic::Request::new(reg_info);
+        if let Ok(reg_res) = client.register(reg_req).await {
+            if let Some(own_uuid) = reg_res.into_inner().uuid {
+                // login
+                let (tx, mut rx) = mpsc::channel(4);
+                tokio::spawn(async move {
+                    let reg_info = Registration {
+                        uuid: Some(own_uuid),
+                    };
+                    if let Ok(response) = client.login(tonic::Request::new(reg_info)).await {
+                        let mut stream = response.into_inner();
+                        while let Some(event) = stream.message().await.ok().flatten() {
+                            if let Some(payload) = event.payload {
+                                match payload {
+                                    Payload::Login(data) => {
+                                        let _ = tx.send(data).await;
+                                    }
+                                    Payload::Invitation(_data) => {
+                                        //todo: handle invitation
+                                        debug!("todo: handle invitation");
+                                    }
                                 }
-                                Payload::Invitation(_data) => {
-                                    //todo: handle invitation
-                                    debug!("todo: handle invitation");
-                                }
+                            } else {
+                                error!("no payload in event");
                             }
-                        } else {
-                            error!("no payload in event");
                         }
+                    } else {
+                        error!("login failed");
                     }
+                });
+                if let Some(login) = rx.recv().await {
+                    info!("logged as {:?}", login);
                 } else {
-                    error!("login failed");
+                    error!("login failed, reply stream closed");
                 }
-            });
-            if let Some(login) = rx.recv().await {
-                info!("logged as {:?}", login);
             } else {
-                error!("login failed, reply stream closed");
+                //return Err("bad registration data returned".into());
+                warn!("bad registration data returned");
             }
         } else {
-            //return Err("bad registration data returned".into());
-            warn!("bad registration data returned");
+            //return Err("registration failed".into());
+            warn!("registration failed");
         }
-    } else {
-        //return Err("registration failed".into());
-        warn!("registration failed");
+        info!("exitting, bye!");
+
+        Ok(())
     }
-    info!("exitting, bye!");
-    Ok(())
 }
