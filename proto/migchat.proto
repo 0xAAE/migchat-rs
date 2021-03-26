@@ -3,7 +3,7 @@ syntax = "proto3";
 
 option java_multiple_files = true;
 option java_package = "com.toisystems.migchat";
-option java_outer_classname = "MiGChatProto";
+option java_outer_classname = "MigchatProto";
 option objc_class_prefix = "MGC";
 
 package migchat;
@@ -13,15 +13,17 @@ service ChatRoomService {
   // Sends a reqistration request
   rpc Register (UserInfo) returns (Registration) {}
   // Sends a login, gets invitations. The first invitation has chat_id = 0 and own user_id
-  rpc Login (Registration) returns (stream Event) {}
+  rpc Login (Registration) returns (Session) {}
   // Sends a logout request using the first invitation from the server
-  rpc Logout (Invitation) returns (Result) {}
-  // Starts chating
-  rpc StartChating(stream Post) returns (stream Post) {}
+  rpc Logout (Session) returns (Result) {}
+  // Asks for invitations
+  rpc GetInvitations(RequestInvitations) returns (stream Invitation) {}
   // Asks for contacts list
   rpc GetUsers(RequestUsers) returns (stream UpdateUsers) {}
   // Asks for chats list
   rpc GetChats(RequestChats) returns (stream UpdateChats) {}
+  // Starts chating
+  rpc StartChating(stream Post) returns (stream Post) {}
 
   // Creates new chat
   rpc CreateChat(ChatInfo) returns (Chat) {}
@@ -46,8 +48,13 @@ message Registration {
     UUID uuid = 1;
 }
 
+message RequestInvitations {
+    uint32 session_id = 1;
+}
+
 message RequestUsers {
-    bool filter_alive = 1;
+    uint32 session_id = 1;
+    bool filter_alive = 2;
 }
 
 message UpdateUsers {
@@ -62,7 +69,8 @@ message User {
 }
 
 message RequestChats {
-    bool filter_alive = 1;
+    uint32 session_id = 1;
+    bool filter_alive = 2;
 }
 
 message UpdateChats {
@@ -89,13 +97,6 @@ message Invitation {
 
 message Session {
     uint32 id = 1;
-}
-
-message Event {
-    oneof payload {
-        Session login = 1;
-        Invitation invitation = 2;
-    }
 }
 
 message Result {
