@@ -3,12 +3,13 @@ use clap::{App, Arg};
 use config::{Config, Environment, File};
 use env_logger::{fmt::TimestampPrecision, Builder, Env, Target};
 use log::{debug, error, info, warn};
-use tokio::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use tokio::sync::{mpsc, oneshot};
 
 mod proto;
 
 use proto::chat_room_service_client::ChatRoomServiceClient;
-use proto::{event::Payload, Registration, UserInfo};
+use proto::{event::Payload, Event, Registration, Session, UserInfo};
 
 const CONFIG: &str = "config";
 const CONFIG_DEF: &str = "client.toml";
@@ -57,72 +58,114 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     client.launch().await
 }
 
+type SharedInvitations = Arc<Mutex<Vec<proto::Invitation>>>;
+
 struct MigchatClient {
     name: String,
     short_name: String,
+    invitations: SharedInvitations,
 }
 
 impl MigchatClient {
     fn new(settings: &Config) -> Self {
         let name = settings.get_str("name").unwrap_or("Anonimous".to_string());
         let short_name = settings.get_str("short_name").unwrap_or("Nemo".to_string());
-        MigchatClient { name, short_name }
+        MigchatClient {
+            name,
+            short_name,
+            invitations: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 
     async fn launch(&self) -> Result<(), Box<dyn std::error::Error>> {
         let mut client = ChatRoomServiceClient::connect("http://0.0.0.0:50051").await?;
 
         // register
-        let reg_info = UserInfo {
+        let user_info = UserInfo {
             name: self.name.clone(),
             short_name: self.short_name.clone(),
         };
-        info!("registering as {:?}", reg_info);
-        let reg_req = tonic::Request::new(reg_info);
+        info!("registering as {:?}", user_info);
+        let reg_req = tonic::Request::new(user_info);
         if let Ok(reg_res) = client.register(reg_req).await {
             if let Some(own_uuid) = reg_res.into_inner().uuid {
-                // login
-                let (tx, mut rx) = mpsc::channel(4);
+                //
+                // launch login + accepting invitations in separate task
+                //
+                let (tx, rx) = oneshot::channel();
+                let invitations = self.invitations.clone();
                 tokio::spawn(async move {
                     let reg_info = Registration {
                         uuid: Some(own_uuid),
                     };
                     if let Ok(response) = client.login(tonic::Request::new(reg_info)).await {
-                        let mut stream = response.into_inner();
-                        while let Some(event) = stream.message().await.ok().flatten() {
-                            if let Some(payload) = event.payload {
-                                match payload {
-                                    Payload::Login(data) => {
-                                        let _ = tx.send(data).await;
-                                    }
-                                    Payload::Invitation(_data) => {
-                                        //todo: handle invitation
-                                        debug!("todo: handle invitation");
-                                    }
-                                }
-                            } else {
-                                error!("no payload in event");
-                            }
-                        }
+                        let stream = response.into_inner();
+                        MigchatClient::proceed_login_invitations(stream, tx, invitations).await;
                     } else {
                         error!("login failed");
                     }
                 });
-                if let Some(login) = rx.recv().await {
+                //
+                // wait until login proceed
+                //
+                if let Ok(login) = rx.await {
                     info!("logged as {:?}", login);
                 } else {
                     error!("login failed, reply stream closed");
                 }
             } else {
-                //return Err("bad registration data returned".into());
                 warn!("bad registration data returned");
             }
         } else {
-            //return Err("registration failed".into());
             warn!("registration failed");
         }
         info!("exitting, bye!");
 
         Ok(())
+    }
+
+    async fn proceed_login_invitations(
+        stream: tonic::Streaming<Event>,
+        out_login: oneshot::Sender<Session>,
+        out_invites: SharedInvitations,
+    ) {
+        let mut stream = stream;
+        // 1st event = login
+        if let Some(login_event) = stream.message().await.ok().flatten() {
+            if let Some(payload) = login_event.payload {
+                match payload {
+                    Payload::Login(login_data) => {
+                        let _ = out_login.send(login_data);
+                    }
+                    Payload::Invitation(data) => {
+                        error!("unexpected invitation: {:?}", data);
+                    }
+                }
+            } else {
+                error!("no payload in logon result");
+            }
+        } else {
+            error!("stream has closed before logon");
+        }
+        // further events = invitations
+        while let Some(event) = stream.message().await.ok().flatten() {
+            if let Some(payload) = event.payload {
+                match payload {
+                    Payload::Login(data) => {
+                        error!("unexpected login: {:?}", data);
+                    }
+                    Payload::Invitation(data) => {
+                        debug!("invitation: {:?}", &data);
+                        if let Ok(mut invitations) = out_invites.lock() {
+                            invitations.push(data);
+                        } else {
+                            error!("failed access invitations");
+                        }
+                    }
+                }
+            } else {
+                error!("no payload in event");
+            }
+        }
     }
 }
