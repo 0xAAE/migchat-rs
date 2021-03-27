@@ -2,7 +2,7 @@
 use clap::{App, Arg};
 use config::{Config, Environment, File};
 use env_logger::{fmt::TimestampPrecision, Builder, Env, Target};
-use log::{debug, error, info, warn};
+use log::{debug, error, info, warn, LevelFilter};
 use std::{
     error::Error,
     io::stdout,
@@ -78,6 +78,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("failed initializing logger".to_string().into());
     }
     tui_logger::set_default_level(log::LevelFilter::Debug);
+    tui_logger::set_level_for_target("h2", LevelFilter::Warn);
+    tui_logger::set_level_for_target("h2::client", LevelFilter::Warn);
+    tui_logger::set_level_for_target("h2::codec::framed_read", LevelFilter::Warn);
+    tui_logger::set_level_for_target("h2::codec::framed_write", LevelFilter::Warn);
+    tui_logger::set_level_for_target("h2::proto::connection", LevelFilter::Warn);
+    tui_logger::set_level_for_target("h2::proto::settings", LevelFilter::Warn);
+    tui_logger::set_level_for_target("tower", LevelFilter::Warn);
+    tui_logger::set_level_for_target("tower::buffer::worker", LevelFilter::Warn);
+    tui_logger::set_level_for_target("hyper", LevelFilter::Warn);
+    tui_logger::set_level_for_target("hyper::client::connect::http", LevelFilter::Warn);
 
     // launch input / ticks handler
     let (tx_event, mut rx_event) = mpsc::channel(16);
