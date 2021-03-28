@@ -1,4 +1,5 @@
 use crate::proto;
+use log::error;
 use std::sync::{Arc, Mutex};
 use tui::widgets::ListState;
 use tui_logger::{TuiWidgetEvent, TuiWidgetState};
@@ -14,12 +15,24 @@ pub enum Widget {
     Chats,
     Posts,
     Log,
+    Input,
 }
 
 pub enum State {
     Normal,
     Focused,
     Modal,
+}
+
+// input text consumer
+enum InputResult {
+    NewChat, // new chat name
+    NewPost, // new post text
+}
+
+pub struct InputMode {
+    purpose: InputResult,
+    pub title: String,
 }
 
 pub struct App {
@@ -36,6 +49,7 @@ pub struct App {
 
     focused: Widget,
     modal: Widget,
+    pub input: Option<InputMode>,
 }
 
 impl App {
@@ -59,6 +73,7 @@ impl App {
             extended_log,
             focused: Widget::Chats,
             modal: Widget::App,
+            input: None,
         }
     }
 
@@ -129,8 +144,14 @@ impl App {
     pub fn on_right(&mut self) {
         if !self.test_next(false) {
             // pass event into focused
-            if self.modal == Widget::Log {
-                self.logger_state.transition(&TuiWidgetEvent::RightKey);
+            match self.modal {
+                Widget::Log => {
+                    self.logger_state.transition(&TuiWidgetEvent::RightKey);
+                }
+                Widget::Input => {
+                    error!("failed passing --> to input");
+                }
+                _ => {}
             }
         }
     }
@@ -138,22 +159,59 @@ impl App {
     pub fn on_left(&mut self) {
         if !self.test_prev(false) {
             // pass event into focused
-            if self.modal == Widget::Log {
-                self.logger_state.transition(&TuiWidgetEvent::LeftKey);
+            match self.modal {
+                Widget::Log => {
+                    self.logger_state.transition(&TuiWidgetEvent::LeftKey);
+                }
+                Widget::Input => {
+                    error!("failed passing <-- to input");
+                }
+                _ => {}
             }
         }
     }
 
     pub fn on_enter(&mut self) {
-        if !self.test_modal() {
-            if self.modal == Widget::Log {
+        match self.modal {
+            Widget::App => {
+                self.modal = self.focused;
+            }
+            Widget::Log => {
                 self.logger_state.transition(&TuiWidgetEvent::FocusKey);
             }
-        }
+            Widget::Input => {
+                // accept input:
+                if let Some(input) = &self.input {
+                    match input.purpose {
+                        InputResult::NewChat => {
+                            error!("failed creating new chat: no channel to gRPC client")
+                        }
+                        InputResult::NewPost => {
+                            error!("failed creating new chat: no channel to gRPC client")
+                        }
+                    }
+                }
+                self.input = None;
+                // restore previous modal widget:
+                self.modal = self.focused;
+            }
+            _ => {}
+        };
     }
 
     pub fn test_exit(&mut self) -> bool {
-        self.test_esc()
+        match self.modal {
+            Widget::Input => {
+                self.modal = self.focused;
+                self.input = None;
+                false
+            }
+            Widget::App => true,
+            _ => {
+                self.modal = Widget::App;
+                false
+            }
+        }
     }
 
     pub fn on_key(&mut self, c: char) {
@@ -176,48 +234,35 @@ impl App {
                     self.logger_state.transition(&TuiWidgetEvent::PlusKey);
                 }
             }
+            'n' => {
+                // create new item
+                match self.modal {
+                    Widget::Chats => {
+                        self.focused = Widget::Chats;
+                        self.modal = Widget::Input;
+                        // setup input mode:
+                        self.input = Some(InputMode {
+                            purpose: InputResult::NewChat,
+                            title: "New chat name".to_string(),
+                        });
+                    }
+                    Widget::Posts => {
+                        self.focused = Widget::Posts;
+                        self.modal = Widget::Input;
+                        // setup input mode:
+                        self.input = Some(InputMode {
+                            purpose: InputResult::NewPost,
+                            title: "New post content".to_string(),
+                        });
+                    }
+                    _ => {}
+                }
+            }
             _ => {}
         }
     }
 
-    pub fn on_tick(&mut self) {
-        // // Update progress
-        // self.progress += 0.001;
-        // if self.progress > 1.0 {
-        //     self.progress = 0.0;
-        // }
-
-        // self.sparkline.on_tick();
-        // self.signals.on_tick();
-
-        // let log = self.logs.items.pop().unwrap();
-        // self.logs.items.insert(0, log);
-
-        // let event = self.barchart.pop().unwrap();
-        // self.barchart.insert(0, event);
-    }
-
-    // true if should exit
-    fn test_esc(&mut self) -> bool {
-        match self.modal {
-            Widget::App => true,
-            _ => {
-                self.modal = Widget::App;
-                false
-            }
-        }
-    }
-
-    // true if enter modal state
-    fn test_modal(&mut self) -> bool {
-        match self.modal {
-            Widget::App => {
-                self.modal = self.focused;
-                true
-            }
-            _ => false,
-        }
-    }
+    pub fn on_tick(&mut self) {}
 
     // true if focus changed
     fn test_next(&mut self, vert: bool) -> bool {
@@ -246,8 +291,8 @@ impl App {
                             Widget::Chats
                         }
                     }
-                    Widget::Log => self.focused,
                     Widget::App => Widget::Log,
+                    _ => self.focused,
                 };
                 stored != self.focused
             }
@@ -275,7 +320,6 @@ impl App {
                             Widget::Chats
                         }
                     }
-                    Widget::Users => self.focused,
                     Widget::Log => {
                         if vert {
                             Widget::Chats
@@ -284,6 +328,7 @@ impl App {
                         }
                     }
                     Widget::App => Widget::Chats,
+                    _ => self.focused,
                 };
                 stored != self.focused
             }
