@@ -6,7 +6,10 @@ use log::{debug, error, info, warn, LevelFilter};
 use std::{
     error::Error,
     io::stdout,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
@@ -69,10 +72,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap();
 
     // logging
-    // Builder::from_env(Env::default().default_filter_or("error,h2=warn,tower=warn,hyper=warn"))
-    //     .target(Target::Stdout)
-    //     .format_timestamp(Some(TimestampPrecision::Seconds))
-    //     .init();
     if tui_logger::init_logger(log::LevelFilter::Debug).is_err() {
         // failed initializing logger
         return Err("failed initializing logger".to_string().into());
@@ -89,9 +88,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tui_logger::set_level_for_target("hyper", LevelFilter::Warn);
     tui_logger::set_level_for_target("hyper::client::connect::http", LevelFilter::Warn);
 
+    let exit_flag = Arc::new(AtomicBool::new(false));
+
     // launch input / ticks handler
     let (tx_event, mut rx_event) = mpsc::channel(16);
     let tick_rate = Duration::from_millis(250);
+    let exit_flag_copy = exit_flag.clone();
     tokio::spawn(async move {
         let mut last_tick = Instant::now();
         loop {
@@ -102,16 +104,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if event::poll(timeout).unwrap() {
                 if let CEvent::Key(key) = event::read().unwrap() {
                     if tx_event.send(Event::Input(key)).await.is_err() {
-                        break;
-                    }
-                    if key.code == KeyCode::Esc {
+                        print!("failed sending key");
                         break;
                     }
                 }
             }
             if last_tick.elapsed() >= tick_rate {
-                let _ = tx_event.send(Event::Tick).await;
+                if tx_event.send(Event::Tick).await.is_err() {
+                    print!("failed sending tick");
+                    break;
+                }
                 last_tick = Instant::now();
+            }
+            if exit_flag_copy.load(Ordering::SeqCst) {
+                print!("exit flag is set");
+                break;
             }
         }
         print!("event handler is closed");
@@ -119,15 +126,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // launch client
     let mut client = MigchatClient::new(&settings);
+    let exit_flag_copy = exit_flag.clone();
     tokio::spawn(async move {
-        let _ = client.launch().await;
+        let _ = client.launch(exit_flag_copy).await;
     });
 
     // launch UI
-    let users: ui::SharedUsers = Arc::new(Mutex::new(Vec::new()));
+    let user = UserInfo {
+        name: settings.get_str("name").unwrap_or("Anonimous".to_string()),
+        short_name: settings.get_str("short_name").unwrap_or("Nemo".to_string()),
+    };
+    let test_users = vec![];
+    let users: ui::SharedUsers = Arc::new(Mutex::new(test_users));
     let chats: ui::SharedChats = Arc::new(Mutex::new(Vec::new()));
+    let posts: ui::SharedPosts = Arc::new(Mutex::new(Vec::new()));
     let users_copy = users.clone();
     let chats_copy = chats.clone();
+    let posts_copy = posts.clone();
     tokio::task::block_in_place(move || {
         if enable_raw_mode().is_ok() {
             let mut stdout = stdout();
@@ -135,25 +150,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let backend = CrosstermBackend::new(stdout);
                 if let Ok(mut terminal) = Terminal::new(backend) {
                     if terminal.clear().is_ok() {
-                        let mut app = ui::App::new(users_copy, chats_copy);
+                        let mut app = ui::App::new(user, users_copy, chats_copy, posts_copy);
                         loop {
                             if terminal.draw(|f| ui::draw(f, &mut app)).is_err() {
-                                // failed draw
+                                print!("failed drawing UI");
                                 break;
                             }
                             if let Some(event) = rx_event.blocking_recv() {
                                 match event {
                                     Event::Input(event) => match event.code {
                                         KeyCode::Esc => {
-                                            let _ = disable_raw_mode();
-                                            let _ = execute!(
-                                                terminal.backend_mut(),
-                                                LeaveAlternateScreen,
-                                                DisableMouseCapture
-                                            );
-                                            let _ = terminal.show_cursor();
-                                            break;
+                                            if app.test_exit() {
+                                                let _ = disable_raw_mode();
+                                                let _ = execute!(
+                                                    terminal.backend_mut(),
+                                                    LeaveAlternateScreen,
+                                                    DisableMouseCapture
+                                                );
+                                                let _ = terminal.show_cursor();
+                                                exit_flag.store(true, Ordering::SeqCst);
+                                                break;
+                                            }
                                         }
+                                        KeyCode::Enter => app.on_enter(),
                                         KeyCode::Char(c) => app.on_key(c),
                                         KeyCode::Left => app.on_left(),
                                         KeyCode::Up => app.on_up(),
@@ -200,7 +219,10 @@ impl MigchatClient {
         }
     }
 
-    async fn launch(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn launch(
+        &mut self,
+        exit_flag: Arc<AtomicBool>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let channel = Endpoint::from_static("http://0.0.0.0:50051")
             .timeout(Duration::from_secs(10))
             .connect()
@@ -265,7 +287,10 @@ impl MigchatClient {
         } else {
             warn!("registration failed");
         }
-        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        while !exit_flag.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
         info!("exitting, bye!");
 
         Ok(())

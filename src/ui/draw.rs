@@ -1,4 +1,4 @@
-use super::App;
+use super::{App, Widget, WidgetState};
 use tui::{
     backend::Backend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -16,6 +16,15 @@ use tui_logger::{TuiLoggerSmartWidget, TuiLoggerWidget};
 
 pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     //
+    // styles
+    //
+    let caption_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let selected_style = Style::default()
+        .bg(Color::LightGreen)
+        .add_modifier(Modifier::BOLD);
+    //
     // layout
     //
     let rows = Layout::default()
@@ -31,13 +40,10 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     //
     // title
     //
-    let block = Block::default().borders(Borders::ALL).title(Span::styled(
-        &app.title,
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    ));
-    let paragraph = Paragraph::new("user (short name)")
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(&app.title, caption_style));
+    let paragraph = Paragraph::new(app.current_user.as_str())
         .block(block)
         .wrap(Wrap { trim: true });
     f.render_widget(paragraph, rows[0]);
@@ -49,7 +55,7 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         .constraints([
             Constraint::Ratio(1, 6),
             Constraint::Ratio(1, 6),
-            Constraint::Ratio(1, 6),
+            Constraint::Ratio(4, 6),
         ])
         .split(rows[1]);
     //
@@ -67,13 +73,10 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     };
     let users = List::new(users)
         .block(Block::default().borders(Borders::ALL).title("Users"))
-        .highlight_style(
-            Style::default()
-                .bg(Color::LightGreen)
-                .add_modifier(Modifier::BOLD),
-        )
+        .style(get_style(app.get_state(Widget::Users)))
+        .highlight_style(selected_style.clone())
         .highlight_symbol(">> ");
-    f.render_widget(users, columns[0]);
+    f.render_stateful_widget(users, columns[0], &mut app.users_state);
     //
     // chats
     //
@@ -88,30 +91,25 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     };
     let chats = List::new(chats)
         .block(Block::default().borders(Borders::ALL).title("Chats"))
-        .highlight_style(
-            Style::default()
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )
+        .style(get_style(app.get_state(Widget::Chats)))
+        .highlight_style(selected_style.clone())
         .highlight_symbol(">> ");
-    f.render_widget(chats, columns[1]);
+    f.render_stateful_widget(chats, columns[1], &mut app.chats_state);
     //
     // selected chat content
     //
     let content: Vec<ListItem> = vec![ListItem::new("Select chat to view posts")];
     let content = List::new(content)
         .block(Block::default().borders(Borders::ALL).title("Posts"))
-        .highlight_style(
-            Style::default()
-                .bg(Color::Gray)
-                .add_modifier(Modifier::BOLD),
-        )
+        .style(get_style(app.get_state(Widget::Posts)))
+        .highlight_style(selected_style.clone())
         .highlight_symbol(">> ");
-    f.render_widget(content, columns[2]);
+    f.render_stateful_widget(content, columns[2], &mut app.posts_state);
     //
     // logger
     //
     let tui_sm = TuiLoggerSmartWidget::default()
+        .border_style(get_style(app.get_state(Widget::Log)))
         .style_error(Style::default().fg(Color::Red))
         .style_debug(Style::default().fg(Color::Green))
         .style_warn(Style::default().fg(Color::Yellow))
@@ -128,4 +126,12 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     //     )
     //     .style(Style::default().fg(Color::White).bg(Color::Black));
     // f.render_widget(tui_w, rows[2]);
+}
+
+fn get_style(state: WidgetState) -> Style {
+    match state {
+        WidgetState::Modal => Style::default().fg(Color::Green),
+        WidgetState::Focused => Style::default().fg(Color::Magenta),
+        _ => Style::default().fg(Color::Gray),
+    }
 }
