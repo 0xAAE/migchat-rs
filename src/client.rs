@@ -2,15 +2,28 @@
 use clap::{App, Arg};
 use config::{Config, Environment, File};
 use env_logger::{fmt::TimestampPrecision, Builder, Env, Target};
-use log::{debug, error, info, warn};
+use log::{debug, error, info, warn, LevelFilter};
 use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
+    error::Error,
+    io::stdout,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
 use tonic::transport::Endpoint;
 
+use crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event as CEvent, KeyCode},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use tui::{backend::CrosstermBackend, Terminal};
+
 mod proto;
+mod ui;
 
 use proto::chat_room_service_client::ChatRoomServiceClient;
 use proto::{
@@ -20,6 +33,11 @@ use proto::{
 const CONFIG: &str = "config";
 const CONFIG_DEF: &str = "client.toml";
 const CONFIG_ENV: &str = "MIGC";
+
+enum Event<I> {
+    Input(I),
+    Tick,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -54,14 +72,147 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap();
 
     // logging
-    Builder::from_env(Env::default().default_filter_or("debug,h2=info,tower=info,hyper=info"))
-        .target(Target::Stdout)
-        .format_timestamp(Some(TimestampPrecision::Seconds))
-        .init();
+    if tui_logger::init_logger(log::LevelFilter::Debug).is_err() {
+        // failed initializing logger
+        return Err("failed initializing logger".to_string().into());
+    }
+    tui_logger::set_default_level(log::LevelFilter::Debug);
+    tui_logger::set_level_for_target("h2", LevelFilter::Warn);
+    tui_logger::set_level_for_target("h2::client", LevelFilter::Warn);
+    tui_logger::set_level_for_target("h2::codec::framed_read", LevelFilter::Warn);
+    tui_logger::set_level_for_target("h2::codec::framed_write", LevelFilter::Warn);
+    tui_logger::set_level_for_target("h2::proto::connection", LevelFilter::Warn);
+    tui_logger::set_level_for_target("h2::proto::settings", LevelFilter::Warn);
+    tui_logger::set_level_for_target("tower", LevelFilter::Warn);
+    tui_logger::set_level_for_target("tower::buffer::worker", LevelFilter::Warn);
+    tui_logger::set_level_for_target("hyper", LevelFilter::Warn);
+    tui_logger::set_level_for_target("hyper::client::connect::http", LevelFilter::Warn);
+
+    let exit_flag = Arc::new(AtomicBool::new(false));
+
+    // launch input / ticks handler
+    let (tx_event, mut rx_event) = mpsc::channel(16);
+    let tick_rate = Duration::from_millis(250);
+    let exit_flag_copy = exit_flag.clone();
+    tokio::spawn(async move {
+        let mut last_tick = Instant::now();
+        loop {
+            // poll for tick rate duration, if no events, sent tick event.
+            let timeout = tick_rate
+                .checked_sub(last_tick.elapsed())
+                .unwrap_or_else(|| Duration::from_secs(0));
+            if event::poll(timeout).unwrap() {
+                if let CEvent::Key(key) = event::read().unwrap() {
+                    if tx_event.send(Event::Input(key)).await.is_err() {
+                        print!("failed sending key");
+                        break;
+                    }
+                }
+            }
+            if last_tick.elapsed() >= tick_rate {
+                if tx_event.send(Event::Tick).await.is_err() {
+                    print!("failed sending tick");
+                    break;
+                }
+                last_tick = Instant::now();
+            }
+            if exit_flag_copy.load(Ordering::SeqCst) {
+                print!("exit flag is set");
+                break;
+            }
+        }
+        print!("event handler is closed");
+    });
 
     // launch client
     let mut client = MigchatClient::new(&settings);
-    client.launch().await
+    let exit_flag_copy = exit_flag.clone();
+    tokio::spawn(async move {
+        let _ = client.launch(exit_flag_copy).await;
+    });
+
+    // launch UI
+    let user = UserInfo {
+        name: settings.get_str("name").unwrap_or("Anonimous".to_string()),
+        short_name: settings.get_str("short_name").unwrap_or("Nemo".to_string()),
+    };
+    let mut next_id = 100;
+    let mut test_users = Vec::new();
+    if let Ok(config_test_users) = settings.get_array("test_users") {
+        for item in config_test_users {
+            if let Ok(names) = item.into_array() {
+                if names.len() == 2 {
+                    test_users.push(proto::User {
+                        session_id: next_id,
+                        name: names[0].to_string(),
+                        short_name: names[1].to_string(),
+                    });
+                    next_id += 1;
+                }
+            }
+        }
+    }
+    let users: ui::SharedUsers = Arc::new(Mutex::new(test_users));
+    let chats: ui::SharedChats = Arc::new(Mutex::new(Vec::new()));
+    let posts: ui::SharedPosts = Arc::new(Mutex::new(Vec::new()));
+    let users_copy = users.clone();
+    let chats_copy = chats.clone();
+    let posts_copy = posts.clone();
+    let extended_log = settings.get_bool("extended_log").unwrap_or(false);
+    tokio::task::block_in_place(move || {
+        if enable_raw_mode().is_ok() {
+            let mut stdout = stdout();
+            if execute!(stdout, EnterAlternateScreen, EnableMouseCapture).is_ok() {
+                let backend = CrosstermBackend::new(stdout);
+                if let Ok(mut terminal) = Terminal::new(backend) {
+                    if terminal.clear().is_ok() {
+                        let mut app =
+                            ui::App::new(user, users_copy, chats_copy, posts_copy, extended_log);
+                        loop {
+                            if terminal.draw(|f| ui::draw(f, &mut app)).is_err() {
+                                print!("failed drawing UI");
+                                break;
+                            }
+                            if let Some(event) = rx_event.blocking_recv() {
+                                match event {
+                                    Event::Input(event) => match event.code {
+                                        KeyCode::Esc => {
+                                            if app.test_exit() {
+                                                let _ = disable_raw_mode();
+                                                let _ = execute!(
+                                                    terminal.backend_mut(),
+                                                    LeaveAlternateScreen,
+                                                    DisableMouseCapture
+                                                );
+                                                let _ = terminal.show_cursor();
+                                                exit_flag.store(true, Ordering::SeqCst);
+                                                break;
+                                            }
+                                        }
+                                        KeyCode::Enter => app.on_enter(),
+                                        KeyCode::Char(c) => app.on_key(c),
+                                        KeyCode::Left => app.on_left(),
+                                        KeyCode::Up => app.on_up(),
+                                        KeyCode::Right => app.on_right(),
+                                        KeyCode::Down => app.on_down(),
+                                        _ => {}
+                                    },
+                                    Event::Tick => {
+                                        app.on_tick();
+                                    }
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    print!("exitting migchat-client\n");
+    Ok(())
 }
 
 type SharedInvitations = Arc<Mutex<Vec<proto::Invitation>>>;
@@ -85,7 +236,10 @@ impl MigchatClient {
         }
     }
 
-    async fn launch(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn launch(
+        &mut self,
+        exit_flag: Arc<AtomicBool>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let channel = Endpoint::from_static("http://0.0.0.0:50051")
             .timeout(Duration::from_secs(10))
             .connect()
@@ -150,7 +304,10 @@ impl MigchatClient {
         } else {
             warn!("registration failed");
         }
-        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        while !exit_flag.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
         info!("exitting, bye!");
 
         Ok(())
