@@ -133,13 +133,24 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     // input
     //
     if let Some(input) = &app.input {
-        let block = Block::default()
-            .title(input.title.as_str())
+        let block = Paragraph::new(input.text.as_ref())
             .style(get_style(app.get_state(Widget::Input)))
-            .borders(Borders::ALL);
-        let area = Rect::new(columns[1].left() + 5, columns[1].top() + 5, 60, 10); // centered_rect(60, 10, f.size());
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .style(get_style(app.get_state(Widget::Input)))
+                    .title(input.title.as_str()),
+            );
+        let area = Rect::new(columns[1].left() + 5, columns[1].top() + 5, 60, 3); // centered_rect(60, 10, f.size());
         f.render_widget(Clear, area); //this clears out the background
         f.render_widget(block, area);
+        // Make the cursor visible and ask tui-rs to put it at the specified coordinates after rendering
+        f.set_cursor(
+            // Put cursor past the end of the input text
+            area.x + input.text.len() as u16 + 1,
+            // Move one line down, from the border to the input line
+            area.y + 1,
+        )
     }
 }
 

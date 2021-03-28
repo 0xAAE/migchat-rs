@@ -33,6 +33,25 @@ enum InputResult {
 pub struct InputMode {
     purpose: InputResult,
     pub title: String,
+    pub text: String,
+}
+
+impl InputMode {
+    pub fn new_chat() -> Self {
+        InputMode {
+            purpose: InputResult::NewChat,
+            title: "New chat name".to_string(),
+            text: String::with_capacity(64),
+        }
+    }
+
+    pub fn new_post() -> Self {
+        InputMode {
+            purpose: InputResult::NewPost,
+            title: "Post content".to_string(),
+            text: String::with_capacity(512),
+        }
+    }
 }
 
 pub struct App {
@@ -184,10 +203,16 @@ impl App {
                 if let Some(input) = &self.input {
                     match input.purpose {
                         InputResult::NewChat => {
-                            error!("failed creating new chat: no channel to gRPC client")
+                            error!(
+                                "failed creating chat '{}': no channel to gRPC client",
+                                &input.text
+                            );
                         }
                         InputResult::NewPost => {
-                            error!("failed creating new chat: no channel to gRPC client")
+                            error!(
+                                "failed creating post '{}': no channel to gRPC client",
+                                &input.text
+                            );
                         }
                     }
                 }
@@ -215,50 +240,60 @@ impl App {
     }
 
     pub fn on_key(&mut self, c: char) {
-        match c {
-            'q' => {
-                let _ = self.test_exit();
+        if self.modal == Widget::Input {
+            if let Some(input) = self.input.as_mut() {
+                input.text.push(c);
+            } else {
+                error!("input mode is not init properly");
             }
-            ' ' => {
-                if self.modal == Widget::Log {
-                    self.logger_state.transition(&TuiWidgetEvent::SpaceKey);
+        } else {
+            match c {
+                'q' => {
+                    let _ = self.test_exit();
                 }
-            }
-            '-' => {
-                if self.modal == Widget::Log {
-                    self.logger_state.transition(&TuiWidgetEvent::MinusKey);
-                }
-            }
-            '+' => {
-                if self.modal == Widget::Log {
-                    self.logger_state.transition(&TuiWidgetEvent::PlusKey);
-                }
-            }
-            'n' => {
-                // create new item
-                match self.modal {
-                    Widget::Chats => {
-                        self.focused = Widget::Chats;
-                        self.modal = Widget::Input;
-                        // setup input mode:
-                        self.input = Some(InputMode {
-                            purpose: InputResult::NewChat,
-                            title: "New chat name".to_string(),
-                        });
+                ' ' => {
+                    if self.modal == Widget::Log {
+                        self.logger_state.transition(&TuiWidgetEvent::SpaceKey);
                     }
-                    Widget::Posts => {
-                        self.focused = Widget::Posts;
-                        self.modal = Widget::Input;
-                        // setup input mode:
-                        self.input = Some(InputMode {
-                            purpose: InputResult::NewPost,
-                            title: "New post content".to_string(),
-                        });
-                    }
-                    _ => {}
                 }
+                '-' => {
+                    if self.modal == Widget::Log {
+                        self.logger_state.transition(&TuiWidgetEvent::MinusKey);
+                    }
+                }
+                '+' => {
+                    if self.modal == Widget::Log {
+                        self.logger_state.transition(&TuiWidgetEvent::PlusKey);
+                    }
+                }
+                'n' => {
+                    // create new item
+                    match self.modal {
+                        Widget::Chats => {
+                            self.focused = Widget::Chats;
+                            self.modal = Widget::Input;
+                            // setup input mode:
+                            self.input = Some(InputMode::new_chat());
+                        }
+                        Widget::Posts => {
+                            self.focused = Widget::Posts;
+                            self.modal = Widget::Input;
+                            // setup input mode:
+                            self.input = Some(InputMode::new_post());
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
             }
-            _ => {}
+        }
+    }
+
+    pub fn on_backspace(&mut self) {
+        if let Some(input) = self.input.as_mut() {
+            if !input.text.is_empty() {
+                input.text.pop();
+            }
         }
     }
 
