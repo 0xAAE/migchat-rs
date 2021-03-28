@@ -158,6 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let users_copy = users.clone();
     let chats_copy = chats.clone();
     let posts_copy = posts.clone();
+    let extended_log = settings.get_bool("extended_log").unwrap_or(false);
     tokio::task::block_in_place(move || {
         if enable_raw_mode().is_ok() {
             let mut stdout = stdout();
@@ -165,7 +166,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let backend = CrosstermBackend::new(stdout);
                 if let Ok(mut terminal) = Terminal::new(backend) {
                     if terminal.clear().is_ok() {
-                        let mut app = ui::App::new(user, users_copy, chats_copy, posts_copy);
+                        let mut app =
+                            ui::App::new(user, users_copy, chats_copy, posts_copy, extended_log);
                         loop {
                             if terminal.draw(|f| ui::draw(f, &mut app)).is_err() {
                                 print!("failed drawing UI");

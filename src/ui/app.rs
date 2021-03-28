@@ -31,10 +31,11 @@ pub struct App {
     pub posts: SharedPosts,
     pub posts_state: ListState,
     pub logger_state: TuiWidgetState,
+    pub current_user: String,
+    pub extended_log: bool,
 
     focused: Widget,
     modal: Widget,
-    pub current_user: String,
 }
 
 impl App {
@@ -43,6 +44,7 @@ impl App {
         users: SharedUsers,
         chats: SharedChats,
         posts: SharedPosts,
+        extended_log: bool,
     ) -> Self {
         App {
             title: "MiGChat".to_string(),
@@ -53,9 +55,10 @@ impl App {
             posts,
             posts_state: ListState::default(),
             logger_state: TuiWidgetState::new(),
+            current_user: format!("{} ({})", user.short_name, user.name),
+            extended_log,
             focused: Widget::Chats,
             modal: Widget::App,
-            current_user: format!("{} ({})", user.short_name, user.name),
         }
     }
 

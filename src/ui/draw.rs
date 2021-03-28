@@ -108,24 +108,27 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     //
     // logger
     //
-    let tui_sm = TuiLoggerSmartWidget::default()
-        .border_style(get_style(app.get_state(Widget::Log)))
-        .style_error(Style::default().fg(Color::Red))
-        .style_debug(Style::default().fg(Color::Green))
-        .style_warn(Style::default().fg(Color::Yellow))
-        .style_trace(Style::default().fg(Color::Magenta))
-        .style_info(Style::default().fg(Color::Cyan))
-        .state(&mut app.logger_state);
-    f.render_widget(tui_sm, rows[2]);
-    // let tui_w: TuiLoggerWidget = TuiLoggerWidget::default()
-    //     .block(
-    //         Block::default()
-    //             .title("Independent Tui Logger View")
-    //             .border_style(Style::default().fg(Color::White).bg(Color::Black))
-    //             .borders(Borders::ALL),
-    //     )
-    //     .style(Style::default().fg(Color::White).bg(Color::Black));
-    // f.render_widget(tui_w, rows[2]);
+    if app.extended_log {
+        let tui_sm = TuiLoggerSmartWidget::default()
+            .border_style(get_style(app.get_state(Widget::Log)))
+            .style_error(Style::default().fg(Color::Red))
+            .style_debug(Style::default().fg(Color::Green))
+            .style_warn(Style::default().fg(Color::Yellow))
+            .style_trace(Style::default().fg(Color::Magenta))
+            .style_info(Style::default().fg(Color::Cyan))
+            .state(&mut app.logger_state);
+        f.render_widget(tui_sm, rows[2]);
+    } else {
+        let tui_w: TuiLoggerWidget = TuiLoggerWidget::default()
+            .block(
+                Block::default()
+                    .title("Independent Tui Logger View")
+                    .border_style(get_style(app.get_state(Widget::Log)))
+                    .borders(Borders::ALL),
+            )
+            .style(get_style(app.get_state(Widget::Log)));
+        f.render_widget(tui_w, rows[2]);
+    }
 }
 
 fn get_style(state: WidgetState) -> Style {
