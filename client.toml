@@ -1,2 +1,7 @@
 name = "Alexander Avramenko"
 short_name = "0xAAE"
+test_users = [
+    ["Иван Петров", "ivan"],
+    ["Петр Сидоров", "pet"],
+    ["Сидор Иванов", "cider"],
+]

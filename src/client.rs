@@ -136,7 +136,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         name: settings.get_str("name").unwrap_or("Anonimous".to_string()),
         short_name: settings.get_str("short_name").unwrap_or("Nemo".to_string()),
     };
-    let test_users = vec![];
+    let mut next_id = 100;
+    let mut test_users = Vec::new();
+    if let Ok(config_test_users) = settings.get_array("test_users") {
+        for item in config_test_users {
+            if let Ok(names) = item.into_array() {
+                if names.len() == 2 {
+                    test_users.push(proto::User {
+                        session_id: next_id,
+                        name: names[0].to_string(),
+                        short_name: names[1].to_string(),
+                    });
+                    next_id += 1;
+                }
+            }
+        }
+    }
     let users: ui::SharedUsers = Arc::new(Mutex::new(test_users));
     let chats: ui::SharedChats = Arc::new(Mutex::new(Vec::new()));
     let posts: ui::SharedPosts = Arc::new(Mutex::new(Vec::new()));
