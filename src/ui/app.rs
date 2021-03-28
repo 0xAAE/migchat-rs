@@ -55,7 +55,7 @@ impl App {
             posts,
             posts_state: ListState::default(),
             logger_state: TuiWidgetState::new(),
-            current_user: format!("{} ({})", user.short_name, user.name),
+            current_user: format!("{} ({})", user.name, user.short_name),
             extended_log,
             focused: Widget::Chats,
             modal: Widget::App,
@@ -74,18 +74,54 @@ impl App {
 
     pub fn on_up(&mut self) {
         if !self.test_prev(true) {
-            // pass event into focused
-            if self.modal == Widget::Log {
-                self.logger_state.transition(&TuiWidgetEvent::UpKey);
+            // pass event into modal
+            match self.modal {
+                Widget::Log => {
+                    self.logger_state.transition(&TuiWidgetEvent::UpKey);
+                }
+                Widget::Chats => {
+                    if let Ok(chats) = self.chats.lock() {
+                        App::list_previous(&mut self.chats_state, chats.len());
+                    }
+                }
+                Widget::Users => {
+                    if let Ok(users) = self.users.lock() {
+                        App::list_previous(&mut self.users_state, users.len());
+                    }
+                }
+                Widget::Posts => {
+                    if let Ok(posts) = self.posts.lock() {
+                        App::list_previous(&mut self.posts_state, posts.len());
+                    }
+                }
+                _ => {}
             }
         }
     }
 
     pub fn on_down(&mut self) {
         if !self.test_next(true) {
-            // pass event into focused
-            if self.modal == Widget::Log {
-                self.logger_state.transition(&TuiWidgetEvent::DownKey);
+            // pass event into modal
+            match self.modal {
+                Widget::Log => {
+                    self.logger_state.transition(&TuiWidgetEvent::DownKey);
+                }
+                Widget::Chats => {
+                    if let Ok(chats) = self.chats.lock() {
+                        App::list_next(&mut self.chats_state, chats.len());
+                    }
+                }
+                Widget::Users => {
+                    if let Ok(users) = self.users.lock() {
+                        App::list_next(&mut self.users_state, users.len());
+                    }
+                }
+                Widget::Posts => {
+                    if let Ok(posts) = self.posts.lock() {
+                        App::list_next(&mut self.posts_state, posts.len());
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -252,6 +288,38 @@ impl App {
                 stored != self.focused
             }
             _ => false,
+        }
+    }
+
+    fn list_next(state: &mut ListState, count: usize) {
+        if count == 0 {
+            state.select(None);
+        } else {
+            state.select(
+                state
+                    .selected()
+                    .and_then(|cur| Some(count.min(cur + 1)))
+                    .or(Some(0)),
+            );
+        }
+    }
+
+    fn list_previous(state: &mut ListState, count: usize) {
+        if count == 0 {
+            state.select(None);
+        } else {
+            state.select(
+                state
+                    .selected()
+                    .and_then(|cur| {
+                        if cur > 0 {
+                            Some(count.min(cur - 1))
+                        } else {
+                            Some(0)
+                        }
+                    })
+                    .or(Some(0)),
+            );
         }
     }
 }
