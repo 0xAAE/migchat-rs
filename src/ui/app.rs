@@ -1,12 +1,14 @@
 use crate::proto;
+use crate::Command;
 use log::error;
 use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
 use tui::widgets::ListState;
 use tui_logger::{TuiWidgetEvent, TuiWidgetState};
 
-pub type SharedChats = Arc<Mutex<Vec<proto::Chat>>>;
-pub type SharedUsers = Arc<Mutex<Vec<proto::User>>>;
-pub type SharedPosts = Arc<Mutex<Vec<proto::Post>>>;
+// pub type SharedChats = Arc<Mutex<Vec<proto::Chat>>>;
+// pub type SharedUsers = Arc<Mutex<Vec<proto::User>>>;
+// pub type SharedPosts = Arc<Mutex<Vec<proto::Post>>>;
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum Widget {
@@ -56,16 +58,17 @@ impl InputMode {
 
 pub struct App {
     pub title: String,
-    pub users: SharedUsers,
+    pub users: Vec<proto::User>,
     pub users_state: ListState,
-    pub chats: SharedChats,
+    pub chats: Vec<proto::Chat>,
     pub chats_state: ListState,
-    pub posts: SharedPosts,
+    pub posts: Vec<proto::Post>,
     pub posts_state: ListState,
     pub logger_state: TuiWidgetState,
     pub current_user: String,
     pub extended_log: bool,
 
+    tx_command: mpsc::Sender<Command>,
     focused: Widget,
     modal: Widget,
     pub input: Option<InputMode>,
@@ -74,22 +77,21 @@ pub struct App {
 impl App {
     pub fn new(
         user: proto::UserInfo,
-        users: SharedUsers,
-        chats: SharedChats,
-        posts: SharedPosts,
+        tx_command: mpsc::Sender<Command>,
         extended_log: bool,
     ) -> Self {
         App {
             title: "MiGChat".to_string(),
-            users,
+            users: Vec::new(),
             users_state: ListState::default(),
-            chats,
+            chats: Vec::new(),
             chats_state: ListState::default(),
-            posts,
+            posts: Vec::with_capacity(128),
             posts_state: ListState::default(),
             logger_state: TuiWidgetState::new(),
             current_user: format!("{} ({})", user.name, user.short_name),
             extended_log,
+            tx_command,
             focused: Widget::Chats,
             modal: Widget::App,
             input: None,
@@ -114,19 +116,13 @@ impl App {
                     self.logger_state.transition(&TuiWidgetEvent::UpKey);
                 }
                 Widget::Chats => {
-                    if let Ok(chats) = self.chats.lock() {
-                        App::list_previous(&mut self.chats_state, chats.len());
-                    }
+                    App::list_previous(&mut self.chats_state, self.chats.len());
                 }
                 Widget::Users => {
-                    if let Ok(users) = self.users.lock() {
-                        App::list_previous(&mut self.users_state, users.len());
-                    }
+                    App::list_previous(&mut self.users_state, self.users.len());
                 }
                 Widget::Posts => {
-                    if let Ok(posts) = self.posts.lock() {
-                        App::list_previous(&mut self.posts_state, posts.len());
-                    }
+                    App::list_previous(&mut self.posts_state, self.posts.len());
                 }
                 _ => {}
             }
@@ -141,19 +137,13 @@ impl App {
                     self.logger_state.transition(&TuiWidgetEvent::DownKey);
                 }
                 Widget::Chats => {
-                    if let Ok(chats) = self.chats.lock() {
-                        App::list_next(&mut self.chats_state, chats.len());
-                    }
+                    App::list_next(&mut self.chats_state, self.chats.len());
                 }
                 Widget::Users => {
-                    if let Ok(users) = self.users.lock() {
-                        App::list_next(&mut self.users_state, users.len());
-                    }
+                    App::list_next(&mut self.users_state, self.users.len());
                 }
                 Widget::Posts => {
-                    if let Ok(posts) = self.posts.lock() {
-                        App::list_next(&mut self.posts_state, posts.len());
-                    }
+                    App::list_next(&mut self.posts_state, self.posts.len());
                 }
                 _ => {}
             }
@@ -203,10 +193,17 @@ impl App {
                 if let Some(input) = &self.input {
                     match input.purpose {
                         InputResult::NewChat => {
-                            error!(
-                                "failed creating chat '{}': no channel to gRPC client",
-                                &input.text
-                            );
+                            if let Err(e) = self.tx_command.blocking_send(Command::CreateChat(
+                                proto::ChatInfo {
+                                    permanent: true,
+                                    auto_enter: true,
+                                    description: input.text.clone(),
+                                    required: Vec::new(),
+                                    optional: Vec::new(),
+                                },
+                            )) {
+                                error!("failed creating chat: {}", e);
+                            }
                         }
                         InputResult::NewPost => {
                             error!(
@@ -401,5 +398,11 @@ impl App {
                     .or(Some(0)),
             );
         }
+    }
+
+    // chat events handling
+
+    pub fn on_user_entered(&mut self, user: proto::User) {
+        self.users.push(user);
     }
 }

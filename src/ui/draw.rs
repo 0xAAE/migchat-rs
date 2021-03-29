@@ -62,15 +62,11 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     // users
     //
     // Iterate through all elements in the `items` app and append some debug text to it.
-    let users: Vec<ListItem> = if let Ok(users) = app.users.lock() {
-        users
-            .iter()
-            .map(|u| ListItem::new(format!("{} ({})", u.name, u.short_name)))
-            .collect()
-    } else {
-        // failed to lock users
-        vec![ListItem::new("failed")]
-    };
+    let users: Vec<ListItem> = app
+        .users
+        .iter()
+        .map(|u| ListItem::new(format!("{} ({})", u.name, u.short_name)))
+        .collect();
     let users = List::new(users)
         .block(Block::default().borders(Borders::ALL).title("Users"))
         .style(get_style(app.get_state(Widget::Users)))
@@ -80,15 +76,11 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     //
     // chats
     //
-    let chats: Vec<ListItem> = if let Ok(chats) = app.chats.lock() {
-        chats
-            .iter()
-            .map(|c| ListItem::new(format!("chat #{}", c.id)))
-            .collect()
-    } else {
-        // failed to lock users
-        vec![ListItem::new("failed")]
-    };
+    let chats: Vec<ListItem> = app
+        .chats
+        .iter()
+        .map(|c| ListItem::new(format!("chat #{}", c.id)))
+        .collect();
     let chats = List::new(chats)
         .block(Block::default().borders(Borders::ALL).title("Chats"))
         .style(get_style(app.get_state(Widget::Chats)))
