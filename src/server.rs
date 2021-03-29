@@ -1,6 +1,6 @@
 use env_logger::{fmt::TimestampPrecision, Builder, Env, Target};
 use futures::Stream; //, StreamExt};
-use log::{debug, info};
+use log::{debug, error, info};
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{
@@ -26,7 +26,12 @@ pub struct ChatRoomImpl {
     next_id: AtomicU32,
     users: RwLock<HashMap<proto::Uuid, User>>,
     users_listeners: Mutex<Vec<mpsc::Sender<Arc<User>>>>,
-    invitations: Mutex<HashMap<u32, mpsc::Sender<Invitation>>>,
+    // user(session_id) -> invitation listener:
+    invitations_listeners: Mutex<HashMap<u32, mpsc::Sender<Invitation>>>,
+    // chat_id -> chat info
+    chats: RwLock<HashMap<u32, proto::Chat>>,
+    // user(session_id) -> chat listener
+    chats_listeners: Mutex<Vec<mpsc::Sender<Arc<Chat>>>>,
 }
 
 impl ChatRoomImpl {
@@ -94,6 +99,7 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = "Server streaming response type for the GetInvitations method."]
     type GetInvitationsStream =
         Pin<Box<dyn Stream<Item = Result<Invitation, tonic::Status>> + Send + Sync + 'static>>;
+
     #[doc = " Asks for invitations"]
     async fn get_invitations(
         &self,
@@ -101,7 +107,7 @@ impl ChatRoomService for ChatRoomImpl {
     ) -> Result<tonic::Response<Self::GetInvitationsStream>, tonic::Status> {
         // get source channel of invitations
         debug!("get_invitations: {:?}", request);
-        let rx_invit = if let Ok(mut locked) = self.invitations.lock() {
+        let rx_invit = if let Ok(mut locked) = self.invitations_listeners.lock() {
             let (tx_invit, rx_invit) = mpsc::channel(4);
             locked.insert(request.into_inner().session_id, tx_invit);
             rx_invit
@@ -152,46 +158,62 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = " Asks for contacts list"]
     async fn get_users(
         &self,
-        _request: tonic::Request<RequestUsers>,
+        request: tonic::Request<RequestUsers>,
     ) -> Result<tonic::Response<Self::GetUsersStream>, tonic::Status> {
+        let subscriber_id = request.into_inner().session_id;
+        let (listener, notifier) = mpsc::channel::<Arc<User>>(4);
         if let Ok(mut listeners) = self.users_listeners.lock() {
-            let (listener, mut notifier) = mpsc::channel::<Arc<User>>(4);
-
-            // start permanent listener, streaming data producer
-            let (tx, rx) = mpsc::channel(4);
-            tokio::spawn(async move {
-                while let Some(user) = notifier.recv().await {
-                    let update = UpdateUsers {
-                        added: vec![user.make_proto()],
-                        gone: Vec::new(),
-                    };
-                    tx.send(Ok(update)).await.unwrap();
-                }
-            });
-
-            // send existing users
-            if let Ok(users) = self.users.read() {
-                for user in users.values() {
-                    let u = Arc::new(user.clone());
-                    let tx = listener.clone();
-                    tokio::spawn(async move {
-                        let _ = tx.send(u).await;
-                    });
-                }
-            } else {
-                // failed read-locking users
-            }
-
-            listeners.push(listener);
-
-            // start streaming activity, data consumer
-            Ok(Response::new(Box::pin(
-                tokio_stream::wrappers::ReceiverStream::new(rx),
-            )))
+            listeners.push(listener.clone());
         } else {
-            // failed locking listeners
-            Err(tonic::Status::internal("no access to listeners"))
+            return Err(tonic::Status::internal("no access to users listeners"));
         }
+        // collect existing users
+        let mut existing = Vec::new();
+        if let Ok(users) = self.users.read() {
+            for user in users.values() {
+                if user.id != subscriber_id {
+                    existing.push(user.make_proto());
+                }
+            }
+        } else {
+            error!("failed to read existing users");
+        }
+        // start permanent listener, streaming data producer
+        let (tx, rx) = mpsc::channel(4);
+        tokio::spawn(async move {
+            if !existing.is_empty() {
+                // send existing users
+                let start_update = UpdateUsers {
+                    added: existing,
+                    gone: Vec::new(),
+                };
+                debug!(
+                    "sending {} existing users to user-{}",
+                    start_update.added.len(),
+                    subscriber_id
+                );
+                if let Err(e) = tx.send(Ok(start_update)).await {
+                    error!("failed sending existing users: {}", e);
+                }
+            }
+            // re-translate new users
+            let mut notifier = notifier;
+            while let Some(user) = notifier.recv().await {
+                debug!("re-translating new user to user-{}", subscriber_id);
+                let update = UpdateUsers {
+                    added: vec![user.make_proto()],
+                    gone: Vec::new(),
+                };
+                if let Err(e) = tx.send(Ok(update)).await {
+                    error!("failed sending users update: {}, stop", e);
+                    break;
+                }
+            }
+        });
+        // start streaming activity, data consumer
+        Ok(Response::new(Box::pin(
+            tokio_stream::wrappers::ReceiverStream::new(rx),
+        )))
     }
 
     #[doc = "Server streaming response type for the GetChats method."]
@@ -201,11 +223,61 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = " Asks for chats list"]
     async fn get_chats(
         &self,
-        _request: tonic::Request<RequestChats>,
+        request: tonic::Request<RequestChats>,
     ) -> Result<tonic::Response<Self::GetChatsStream>, tonic::Status> {
-        Err(tonic::Status::unimplemented(
-            "get_chats() is not implemented yet",
-        ))
+        let subscriber_id = request.into_inner().session_id;
+        let (listener, notifier) = mpsc::channel::<Arc<Chat>>(4);
+        if let Ok(mut listeners) = self.chats_listeners.lock() {
+            listeners.push(listener.clone());
+        } else {
+            // failed locking listeners
+            return Err(tonic::Status::internal("no access to chat listeners"));
+        }
+        // collect existing chats
+        let mut existing = Vec::new();
+        if let Ok(chats) = self.chats.read() {
+            for chat in chats.values() {
+                existing.push(chat.clone());
+            }
+        } else {
+            error!("failed to read existing chats");
+        }
+        // start permanent listener, streaming data producer
+        let (tx, rx) = mpsc::channel(4);
+        tokio::spawn(async move {
+            if !existing.is_empty() {
+                // send existing chats
+                let start_update = UpdateChats {
+                    added: existing,
+                    gone: Vec::new(),
+                };
+                debug!(
+                    "sending {} existing chats to subscriber {}",
+                    start_update.added.len(),
+                    subscriber_id
+                );
+                if let Err(e) = tx.send(Ok(start_update)).await {
+                    error!("failed sending existing chats: {}", e);
+                }
+            }
+            // re-translate new chats
+            let mut notifier = notifier;
+            while let Some(chat) = notifier.recv().await {
+                debug!("re-translating new chat to subscriber {}", subscriber_id);
+                let update = UpdateChats {
+                    added: vec![(*chat).clone()],
+                    gone: Vec::new(),
+                };
+                if let Err(e) = tx.send(Ok(update)).await {
+                    error!("failed sending chat: {}", e);
+                    break;
+                }
+            }
+        });
+        // start streaming activity, data consumer
+        Ok(Response::new(Box::pin(
+            tokio_stream::wrappers::ReceiverStream::new(rx),
+        )))
     }
 
     #[doc = " Creates new chat"]
