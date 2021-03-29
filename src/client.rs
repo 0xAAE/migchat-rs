@@ -123,7 +123,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 break;
             }
         }
-        println!("exitting event handler");
+        println!("event handler stopped");
     });
 
     // launch client
@@ -131,7 +131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let exit_flag_copy = exit_flag.clone();
     let chat_service = tokio::spawn(async move {
         let _ = client.launch(tx_event, exit_flag_copy).await;
-        println!("exitting chat service");
+        println!("chat service stopped");
     });
 
     // launch UI
@@ -185,6 +185,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         ChatRoomEvent::UserEntered(user) => {
                                             app.on_user_entered(user);
                                         }
+                                        ChatRoomEvent::ChatUpdated(chat) => {
+                                            app.on_chat_updated(chat);
+                                        }
+                                        ChatRoomEvent::Invitation(invitation) => {
+                                            app.on_get_invited(invitation);
+                                        }
                                         _ => {
                                             error!(
                                                 "handling this chat event is not implemented yet"
@@ -200,7 +206,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        println!("exitting TUI");
+        println!("UI stopped");
     });
 
     let _ = chat_service.await;

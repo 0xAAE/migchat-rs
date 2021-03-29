@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::mpsc;
-use tonic::transport::Endpoint;
+use tonic::transport::{Channel, Endpoint};
 
 pub enum ChatRoomEvent {
     UserEntered(User),      // session_id, name, short_name
@@ -121,32 +121,27 @@ impl MigchatClient {
                     let session_id = login.id;
                     info!("logged as {:?}", &login);
                     self.login = Some(login);
-                    //
+                    // launch accepting users in separate task
+                    let fut = MigchatClient::read_users_stream(
+                        client.clone(),
+                        tx_event.clone(),
+                        session_id,
+                    );
+                    tokio::spawn(fut);
                     // launch accepting invitations in separate task
-                    //
-                    let req_invitations = RequestInvitations { session_id };
-                    tokio::spawn(async move {
-                        match client
-                            .get_invitations(tonic::Request::new(req_invitations))
-                            .await
-                        {
-                            Ok(response) => {
-                                let mut stream = response.into_inner();
-                                while let Some(invitation) = stream.message().await.ok().flatten() {
-                                    debug!("new invitation: {:?}", &invitation);
-                                    if let Err(e) = tx_event
-                                        .send(Event::Client(ChatRoomEvent::Invitation(invitation)))
-                                        .await
-                                    {
-                                        error!("failed to transfer invitation to UI {}", e);
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                warn!("no more invitations: {}", e);
-                            }
-                        }
-                    });
+                    let fut = MigchatClient::read_invitations_stream(
+                        client.clone(),
+                        tx_event.clone(),
+                        session_id,
+                    );
+                    tokio::spawn(fut);
+                    // launch accepting chats in separate task
+                    let fut = MigchatClient::read_chats_stream(
+                        client.clone(),
+                        tx_event.clone(),
+                        session_id,
+                    );
+                    tokio::spawn(fut);
                 } else {
                     error!("login failed");
                 }
@@ -160,16 +155,28 @@ impl MigchatClient {
         loop {
             match tokio::time::timeout(Duration::from_millis(500), self.rx_command.recv()).await {
                 Err(_) => {
-                    // timeout
+                    // timeout, test exit flag and recv commands
                     if exit_flag.load(Ordering::SeqCst) {
                         break;
                     }
                 }
                 Ok(command) => match command {
                     Some(command) => match command {
-                        Command::CreateChat(_info) => {
-                            error!("creating chat is not implemented yet");
-                        }
+                        Command::CreateChat(info) => match client.create_chat(info).await {
+                            Ok(response) => {
+                                if let Err(e) = tx_event
+                                    .send(Event::Client(ChatRoomEvent::ChatUpdated(
+                                        response.into_inner(),
+                                    )))
+                                    .await
+                                {
+                                    error!("failed routing created chat: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                warn!("failed to create chat: {}", e);
+                            }
+                        },
                         Command::Invite(_invitation) => {
                             error!("inviting others is not implemented yet");
                         }
@@ -187,15 +194,128 @@ impl MigchatClient {
                 },
             }
         }
-        // tokio::select! {
-        //     _ = tokio::time::timeout(Duration::from_millis(250)) => {},
-        //     Command() = self.rx_command.recv()
-        // }
-        // while !exit_flag.load(Ordering::SeqCst) {
-        //     tokio::time::sleep().await;
-        // }
         info!("exitting, bye!");
 
         Ok(())
+    }
+
+    async fn read_users_stream(
+        client: ChatRoomServiceClient<Channel>,
+        tx_event: mpsc::Sender<Event>,
+        session_id: u32,
+    ) {
+        let mut client = client;
+        match client
+            .get_users(tonic::Request::new(RequestUsers {
+                session_id,
+                filter_alive: true,
+            }))
+            .await
+        {
+            Ok(response) => {
+                let mut stream = response.into_inner();
+                while let Some(update_users) = stream.message().await.ok().flatten() {
+                    if !update_users.added.is_empty() {
+                        for user in update_users.added {
+                            debug!("user entered: {:?}", &user);
+                            if let Err(e) = tx_event
+                                .send(Event::Client(ChatRoomEvent::UserEntered(user)))
+                                .await
+                            {
+                                error!("failed to transfer entered user: {}", e);
+                            }
+                        }
+                    }
+                    if !update_users.gone.is_empty() {
+                        for user in update_users.gone {
+                            debug!("user exited: {:?}", &user);
+                            if let Err(e) = tx_event
+                                .send(Event::Client(ChatRoomEvent::UserGone(user.session_id)))
+                                .await
+                            {
+                                error!("failed to transfer exited user: {}", e);
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("no more updated users: {}", e);
+            }
+        }
+    }
+
+    async fn read_invitations_stream(
+        client: ChatRoomServiceClient<Channel>,
+        tx_event: mpsc::Sender<Event>,
+        session_id: u32,
+    ) {
+        let mut client = client;
+        match client
+            .get_invitations(tonic::Request::new(RequestInvitations { session_id }))
+            .await
+        {
+            Ok(response) => {
+                let mut stream = response.into_inner();
+                while let Some(invitation) = stream.message().await.ok().flatten() {
+                    debug!("new invitation: {:?}", &invitation);
+                    if let Err(e) = tx_event
+                        .send(Event::Client(ChatRoomEvent::Invitation(invitation)))
+                        .await
+                    {
+                        error!("failed to transfer invitation to UI {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("no more invitations: {}", e);
+            }
+        }
+    }
+
+    async fn read_chats_stream(
+        client: ChatRoomServiceClient<Channel>,
+        tx_event: mpsc::Sender<Event>,
+        session_id: u32,
+    ) {
+        let mut client = client;
+        match client
+            .get_chats(tonic::Request::new(RequestChats {
+                session_id,
+                filter_alive: true,
+            }))
+            .await
+        {
+            Ok(response) => {
+                let mut stream = response.into_inner();
+                while let Some(updated_chats) = stream.message().await.ok().flatten() {
+                    if !updated_chats.added.is_empty() {
+                        for chat in updated_chats.added {
+                            debug!("chat updated: {:?}", &chat);
+                            if let Err(e) = tx_event
+                                .send(Event::Client(ChatRoomEvent::ChatUpdated(chat)))
+                                .await
+                            {
+                                error!("failed to transfer updated chat: {}", e);
+                            }
+                        }
+                    }
+                    if !updated_chats.gone.is_empty() {
+                        for chat in updated_chats.gone {
+                            debug!("chat has gone: {:?}", &chat);
+                            if let Err(e) = tx_event
+                                .send(Event::Client(ChatRoomEvent::ChatDeleted(chat.id)))
+                                .await
+                            {
+                                error!("failed to transfer deleted chat: {}", e);
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("no more updated chats: {}", e);
+            }
+        }
     }
 }
