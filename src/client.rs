@@ -195,6 +195,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         KeyCode::Up => app.on_up(),
                                         KeyCode::Right => app.on_right(),
                                         KeyCode::Down => app.on_down(),
+                                        KeyCode::Backspace => app.on_backspace(),
                                         _ => {}
                                     },
                                     Event::Tick => {
