@@ -1,97 +1,62 @@
 use env_logger::{fmt::TimestampPrecision, Builder, Env, Target};
 use futures::Stream; //, StreamExt};
+use fxhash::hash64;
 use log::{debug, error, info};
-use std::collections::HashMap;
-use std::pin::Pin;
-use std::sync::{
-    atomic::{AtomicU32, Ordering},
-    Arc, Mutex, RwLock,
+use std::{
+    collections::HashMap,
+    ops::Deref,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc, Mutex, RwLock,
+    },
 };
 use tokio::sync::mpsc;
 use tonic::{transport::Server, Request, Response, Status};
-use uuid::Uuid;
 
 mod proto;
-mod user;
+//mod user;
 
 use proto::chat_room_service_server::{ChatRoomService, ChatRoomServiceServer};
 use proto::{
     Chat, ChatInfo, Invitation, Post, Registration, RequestChats, RequestInvitations, RequestUsers,
-    Result as RpcResult, Session, UpdateChats, UpdateUsers, UserInfo,
+    Result as RpcResult, UpdateChats, UpdateUsers, User, UserInfo,
 };
-use user::User;
+//use user::User;
 
 #[derive(Debug, Default)]
 pub struct ChatRoomImpl {
-    next_id: AtomicU32,
-    users: RwLock<HashMap<proto::Uuid, User>>,
+    next_chat_id: AtomicU32,
+    users: RwLock<HashMap<u64, User>>,
     users_listeners: Mutex<Vec<mpsc::Sender<Arc<User>>>>,
-    // user(session_id) -> invitation listener:
-    invitations_listeners: Mutex<HashMap<u32, mpsc::Sender<Invitation>>>,
-    // chat_id -> chat info
+    // user_id -> invitation listener:
+    invitations_listeners: Mutex<HashMap<u64, mpsc::Sender<Invitation>>>,
+    // chat_id -> chat info:
     chats: RwLock<HashMap<u32, proto::Chat>>,
-    // user(session_id) -> chat listener
     chats_listeners: Mutex<Vec<mpsc::Sender<Arc<Chat>>>>,
 }
 
-impl ChatRoomImpl {
-    #[allow(dead_code)]
-    fn notify_added(&self, u: Arc<User>) {
-        if let Ok(mut locked) = self.users_listeners.lock() {
-            locked.retain(|l| {
-                // return false to remove listener from the vec!
-                l.blocking_send(u.clone()).is_ok()
-            });
-        }
-    }
-}
+impl ChatRoomImpl {}
 
 #[tonic::async_trait]
 impl ChatRoomService for ChatRoomImpl {
     #[doc = " Sends a reqistration request"]
     async fn register(&self, request: Request<UserInfo>) -> Result<Response<Registration>, Status> {
-        debug!("register: {:?}", request);
-        let uuid_val = proto::Uuid {
-            value: format!("{}", Uuid::new_v4()),
-        };
+        debug!("register: {:?}", &request);
+        let user_info = request.into_inner();
+        let user_id = hash64(&user_info);
         if let Ok(mut locked) = self.users.write() {
             let _ = locked.insert(
-                uuid_val.clone(),
+                user_id,
                 User {
-                    id: self.next_id.fetch_add(1, Ordering::SeqCst),
-                    name: request.get_ref().name.to_string(),
-                    short_name: request.get_ref().short_name.to_string(),
+                    user_id,
+                    name: user_info.name,
+                    short_name: user_info.short_name,
                 },
             );
             // Send back our formatted greeting
-            Ok(Response::new(Registration {
-                uuid: Some(uuid_val),
-            }))
+            Ok(Response::new(Registration { user_id }))
         } else {
-            Err(tonic::Status::internal("no access to registration info"))
-        }
-    }
-
-    #[doc = " Sends a login, gets invitations. The first invitation has chat_id = 0 and own user_id"]
-    async fn login(
-        &self,
-        request: tonic::Request<Registration>,
-    ) -> Result<tonic::Response<Session>, tonic::Status> {
-        debug!("login: {:?}", request);
-        if let Ok(locked) = self.users.read() {
-            if let Some(ref uuid) = request.get_ref().uuid {
-                if let Some(user) = locked.get(uuid) {
-                    Ok(Response::new(Session { id: user.id }))
-                } else {
-                    debug!("user is not registered: {:?}", request);
-                    Err(tonic::Status::permission_denied("user is not registered"))
-                }
-            } else {
-                debug!("no user UUID provided in {:?}", request);
-                Err(tonic::Status::invalid_argument("no user UUID provided"))
-            }
-        } else {
-            debug!("no access to registration info");
             Err(tonic::Status::internal("no access to registration info"))
         }
     }
@@ -109,7 +74,7 @@ impl ChatRoomService for ChatRoomImpl {
         debug!("get_invitations: {:?}", request);
         let rx_invit = if let Ok(mut locked) = self.invitations_listeners.lock() {
             let (tx_invit, rx_invit) = mpsc::channel(4);
-            locked.insert(request.into_inner().session_id, tx_invit);
+            locked.insert(request.into_inner().user_id, tx_invit);
             rx_invit
         } else {
             return Err(tonic::Status::internal("no access to invitation channel"));
@@ -130,7 +95,7 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = " Sends a logout request using the first invitation from the server"]
     async fn logout(
         &self,
-        _request: tonic::Request<Session>,
+        _request: tonic::Request<Registration>,
     ) -> Result<tonic::Response<RpcResult>, tonic::Status> {
         Err(tonic::Status::unimplemented(
             "logout() is not implemented yet",
@@ -160,7 +125,7 @@ impl ChatRoomService for ChatRoomImpl {
         &self,
         request: tonic::Request<RequestUsers>,
     ) -> Result<tonic::Response<Self::GetUsersStream>, tonic::Status> {
-        let subscriber_id = request.into_inner().session_id;
+        let subscriber_id = request.into_inner().user_id;
         let (listener, notifier) = mpsc::channel::<Arc<User>>(4);
         if let Ok(mut listeners) = self.users_listeners.lock() {
             listeners.push(listener.clone());
@@ -171,8 +136,8 @@ impl ChatRoomService for ChatRoomImpl {
         let mut existing = Vec::new();
         if let Ok(users) = self.users.read() {
             for user in users.values() {
-                if user.id != subscriber_id {
-                    existing.push(user.make_proto());
+                if user.user_id != subscriber_id {
+                    existing.push(user.clone());
                 }
             }
         } else {
@@ -201,7 +166,7 @@ impl ChatRoomService for ChatRoomImpl {
             while let Some(user) = notifier.recv().await {
                 debug!("re-translating new user to user-{}", subscriber_id);
                 let update = UpdateUsers {
-                    added: vec![user.make_proto()],
+                    added: vec![user.deref().clone()],
                     gone: Vec::new(),
                 };
                 if let Err(e) = tx.send(Ok(update)).await {
@@ -225,7 +190,7 @@ impl ChatRoomService for ChatRoomImpl {
         &self,
         request: tonic::Request<RequestChats>,
     ) -> Result<tonic::Response<Self::GetChatsStream>, tonic::Status> {
-        let subscriber_id = request.into_inner().session_id;
+        let user_id = request.into_inner().user_id;
         let (listener, notifier) = mpsc::channel::<Arc<Chat>>(4);
         if let Ok(mut listeners) = self.chats_listeners.lock() {
             listeners.push(listener.clone());
@@ -252,9 +217,9 @@ impl ChatRoomService for ChatRoomImpl {
                     gone: Vec::new(),
                 };
                 debug!(
-                    "sending {} existing chats to subscriber {}",
+                    "sending {} existing chats to user-{}",
                     start_update.added.len(),
-                    subscriber_id
+                    user_id
                 );
                 if let Err(e) = tx.send(Ok(start_update)).await {
                     error!("failed sending existing chats: {}", e);
@@ -263,7 +228,7 @@ impl ChatRoomService for ChatRoomImpl {
             // re-translate new chats
             let mut notifier = notifier;
             while let Some(chat) = notifier.recv().await {
-                debug!("re-translating new chat to subscriber {}", subscriber_id);
+                debug!("re-translating new chat to user-{}", user_id);
                 let update = UpdateChats {
                     added: vec![(*chat).clone()],
                     gone: Vec::new(),
@@ -283,11 +248,26 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = " Creates new chat"]
     async fn create_chat(
         &self,
-        _request: tonic::Request<ChatInfo>,
+        request: tonic::Request<ChatInfo>,
     ) -> Result<tonic::Response<Chat>, tonic::Status> {
-        Err(tonic::Status::unimplemented(
-            "create_chat() is not implemented yet",
-        ))
+        if let Ok(mut chats) = self.chats.write() {
+            let info = request.get_ref();
+            let users = if info.auto_enter {
+                vec![info.user_id]
+                // todo: auto include desired users
+            } else {
+                Vec::new()
+            };
+            let chat = proto::Chat {
+                chat_id: self.next_chat_id.fetch_add(1, Ordering::SeqCst),
+                description: info.description.clone(),
+                users,
+            };
+            chats.insert(chat.chat_id, chat.clone());
+            Ok(Response::new(chat))
+        } else {
+            Err(tonic::Status::internal("failed to access chats"))
+        }
     }
 
     #[doc = " Invites user to chat"]

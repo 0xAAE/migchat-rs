@@ -195,11 +195,11 @@ impl App {
                         InputResult::NewChat => {
                             if let Err(e) = self.tx_command.blocking_send(Command::CreateChat(
                                 proto::ChatInfo {
+                                    user_id: 0, // will be set bby service
                                     permanent: true,
                                     auto_enter: true,
                                     description: input.text.clone(),
-                                    required: Vec::new(),
-                                    optional: Vec::new(),
+                                    desired_users: Vec::new(),
                                 },
                             )) {
                                 error!("failed creating chat: {}", e);
@@ -407,7 +407,7 @@ impl App {
     }
 
     pub fn on_chat_updated(&mut self, chat: proto::Chat) {
-        let _prev = self.chats.insert(chat.id, chat);
+        let _prev = self.chats.insert(chat.chat_id, chat);
     }
 
     pub fn on_get_invited(&mut self, invitation: proto::Invitation) {

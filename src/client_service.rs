@@ -1,7 +1,7 @@
 use crate::proto::chat_room_service_client::ChatRoomServiceClient;
 use crate::proto::{
-    Chat, ChatInfo, Invitation, Post, Registration, RequestChats, RequestInvitations, RequestUsers,
-    Session, User, UserInfo,
+    Chat, ChatInfo, Invitation, Post, RequestChats, RequestInvitations, RequestUsers, User,
+    UserInfo,
 };
 use crate::Event;
 
@@ -18,12 +18,13 @@ use tokio::sync::mpsc;
 use tonic::transport::{Channel, Endpoint};
 
 pub enum ChatRoomEvent {
-    UserEntered(User),      // session_id, name, short_name
-    UserGone(u32),          // session_id
+    Registered(u64),        // own user_id
+    UserEntered(User),      // user_id, name, short_name
+    UserGone(u64),          // user_id
     ChatUpdated(Chat),      // chat_id
     ChatDeleted(u32),       // chat_id
-    Invitation(Invitation), // session_id (=user), chat_id
-    NewPost(Post),          // chat_id, session_id (=user), text, [attachments]
+    Invitation(Invitation), // user_id, chat_id
+    NewPost(Post),          // chat_id, user_id, text, [attachments]
 }
 
 pub enum Command {
@@ -34,9 +35,7 @@ pub enum Command {
 }
 
 pub struct MigchatClient {
-    name: String,
-    short_name: String,
-    login: Option<Session>,
+    user: User,
     rx_command: mpsc::Receiver<Command>,
     test_users: Option<Vec<User>>,
 }
@@ -53,7 +52,7 @@ impl MigchatClient {
                 if let Ok(names) = item.into_array() {
                     if names.len() == 2 {
                         test_users.push(User {
-                            session_id: next_id,
+                            user_id: next_id,
                             name: names[0].to_string(),
                             short_name: names[1].to_string(),
                         });
@@ -67,9 +66,11 @@ impl MigchatClient {
         };
 
         MigchatClient {
-            name,
-            short_name,
-            login: None,
+            user: User {
+                user_id: 0,
+                name,
+                short_name,
+            },
             rx_command,
             test_users,
         }
@@ -100,54 +101,35 @@ impl MigchatClient {
 
         // register
         let user_info = UserInfo {
-            name: self.name.clone(),
-            short_name: self.short_name.clone(),
+            name: self.user.name.clone(),
+            short_name: self.user.short_name.clone(),
         };
         info!("registering as {:?}", user_info);
         let reg_req = tonic::Request::new(user_info);
-
         if let Ok(reg_res) = client.register(reg_req).await {
-            if let Some(own_uuid) = reg_res.into_inner().uuid {
-                //
-                // login
-                //
-                if let Ok(response) = client
-                    .login(tonic::Request::new(Registration {
-                        uuid: Some(own_uuid),
-                    }))
-                    .await
-                {
-                    let login = response.into_inner();
-                    let session_id = login.id;
-                    info!("logged as {:?}", &login);
-                    self.login = Some(login);
-                    // launch accepting users in separate task
-                    let fut = MigchatClient::read_users_stream(
-                        client.clone(),
-                        tx_event.clone(),
-                        session_id,
-                    );
-                    tokio::spawn(fut);
-                    // launch accepting invitations in separate task
-                    let fut = MigchatClient::read_invitations_stream(
-                        client.clone(),
-                        tx_event.clone(),
-                        session_id,
-                    );
-                    tokio::spawn(fut);
-                    // launch accepting chats in separate task
-                    let fut = MigchatClient::read_chats_stream(
-                        client.clone(),
-                        tx_event.clone(),
-                        session_id,
-                    );
-                    tokio::spawn(fut);
-                } else {
-                    error!("login failed");
-                }
-            } else {
-                warn!("bad registration data returned");
-            }
+            self.user.user_id = reg_res.into_inner().user_id;
+            info!("logged as {:?}", self.user);
+            // launch accepting users in separate task
+            let fut = MigchatClient::read_users_stream(
+                client.clone(),
+                tx_event.clone(),
+                self.user.user_id,
+            );
+            tokio::spawn(fut);
+            // launch accepting invitations in separate task
+            let fut = MigchatClient::read_invitations_stream(
+                client.clone(),
+                tx_event.clone(),
+                self.user.user_id,
+            );
+            tokio::spawn(fut);
+            // launch accepting chats in separate task
+            let fut = MigchatClient::read_chats_stream(
+                client.clone(),
+                tx_event.clone(),
+                self.user.user_id,
+            );
+            tokio::spawn(fut);
         } else {
             warn!("registration failed");
         }
@@ -162,21 +144,24 @@ impl MigchatClient {
                 }
                 Ok(command) => match command {
                     Some(command) => match command {
-                        Command::CreateChat(info) => match client.create_chat(info).await {
-                            Ok(response) => {
-                                if let Err(e) = tx_event
-                                    .send(Event::Client(ChatRoomEvent::ChatUpdated(
-                                        response.into_inner(),
-                                    )))
-                                    .await
-                                {
-                                    error!("failed routing created chat: {}", e);
+                        Command::CreateChat(mut info) => {
+                            info.user_id = self.user.user_id;
+                            match client.create_chat(info).await {
+                                Ok(response) => {
+                                    if let Err(e) = tx_event
+                                        .send(Event::Client(ChatRoomEvent::ChatUpdated(
+                                            response.into_inner(),
+                                        )))
+                                        .await
+                                    {
+                                        error!("failed routing created chat: {}", e);
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("failed to create chat: {}", e);
                                 }
                             }
-                            Err(e) => {
-                                warn!("failed to create chat: {}", e);
-                            }
-                        },
+                        }
                         Command::Invite(_invitation) => {
                             error!("inviting others is not implemented yet");
                         }
@@ -202,12 +187,12 @@ impl MigchatClient {
     async fn read_users_stream(
         client: ChatRoomServiceClient<Channel>,
         tx_event: mpsc::Sender<Event>,
-        session_id: u32,
+        user_id: u64,
     ) {
         let mut client = client;
         match client
             .get_users(tonic::Request::new(RequestUsers {
-                session_id,
+                user_id,
                 filter_alive: true,
             }))
             .await
@@ -230,7 +215,7 @@ impl MigchatClient {
                         for user in update_users.gone {
                             debug!("user exited: {:?}", &user);
                             if let Err(e) = tx_event
-                                .send(Event::Client(ChatRoomEvent::UserGone(user.session_id)))
+                                .send(Event::Client(ChatRoomEvent::UserGone(user.user_id)))
                                 .await
                             {
                                 error!("failed to transfer exited user: {}", e);
@@ -248,11 +233,11 @@ impl MigchatClient {
     async fn read_invitations_stream(
         client: ChatRoomServiceClient<Channel>,
         tx_event: mpsc::Sender<Event>,
-        session_id: u32,
+        user_id: u64,
     ) {
         let mut client = client;
         match client
-            .get_invitations(tonic::Request::new(RequestInvitations { session_id }))
+            .get_invitations(tonic::Request::new(RequestInvitations { user_id }))
             .await
         {
             Ok(response) => {
@@ -276,12 +261,12 @@ impl MigchatClient {
     async fn read_chats_stream(
         client: ChatRoomServiceClient<Channel>,
         tx_event: mpsc::Sender<Event>,
-        session_id: u32,
+        user_id: u64,
     ) {
         let mut client = client;
         match client
             .get_chats(tonic::Request::new(RequestChats {
-                session_id,
+                user_id,
                 filter_alive: true,
             }))
             .await
@@ -304,7 +289,7 @@ impl MigchatClient {
                         for chat in updated_chats.gone {
                             debug!("chat has gone: {:?}", &chat);
                             if let Err(e) = tx_event
-                                .send(Event::Client(ChatRoomEvent::ChatDeleted(chat.id)))
+                                .send(Event::Client(ChatRoomEvent::ChatDeleted(chat.chat_id)))
                                 .await
                             {
                                 error!("failed to transfer deleted chat: {}", e);
