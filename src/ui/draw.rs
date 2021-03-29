@@ -74,7 +74,7 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let chats: Vec<ListItem> = app
         .chats
         .values()
-        .map(|c| ListItem::new(format!("chat #{}", c.id)))
+        .map(|c| ListItem::new(format!("chat #{}", c.chat_id)))
         .collect();
     let chats = List::new(chats)
         .block(Block::default().borders(Borders::ALL).title("Chats"))
