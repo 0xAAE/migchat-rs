@@ -12,10 +12,8 @@ package migchat;
 service ChatRoomService {
   // Sends a reqistration request
   rpc Register (UserInfo) returns (Registration) {}
-  // Sends a login, gets invitations. The first invitation has chat_id = 0 and own user_id
-  rpc Login (Registration) returns (Session) {}
   // Sends a logout request using the first invitation from the server
-  rpc Logout (Session) returns (Result) {}
+  rpc Logout (Registration) returns (Result) {}
   // Asks for invitations
   rpc GetInvitations(RequestInvitations) returns (stream Invitation) {}
   // Asks for contacts list
@@ -35,25 +33,21 @@ service ChatRoomService {
   rpc LeaveChat(Chat) returns (Result) {}
 }
 
-message UUID {
-  string value = 1;
-}
-
 message UserInfo {
   string name = 1;
   string short_name = 2;
 }
 
 message Registration {
-    UUID uuid = 1;
+    uint64 user_id = 1;
 }
 
 message RequestInvitations {
-    uint32 session_id = 1;
+    uint64 user_id = 1;
 }
 
 message RequestUsers {
-    uint32 session_id = 1;
+    uint64 user_id = 1;
     bool filter_alive = 2;
 }
 
@@ -63,13 +57,13 @@ message UpdateUsers {
 }
 
 message User {
-    uint32 session_id = 1;
+    uint64 user_id = 1;
     string name = 2;
     string short_name = 3;
 }
 
 message RequestChats {
-    uint32 session_id = 1;
+    uint64 user_id = 1;
     bool filter_alive = 2;
 }
 
@@ -79,24 +73,22 @@ message UpdateChats {
 }
 
 message ChatInfo {
-    bool permanent = 1;
-    string description = 2;
-    bool auto_enter = 3;
-    repeated User required = 4;
-    repeated User optional = 5;
+    uint64 user_id = 1;
+    bool permanent = 2;
+    string description = 3;
+    bool auto_enter = 4;
+    repeated uint64 desired_users = 5;
 }
 
 message Chat {
-    uint32 id = 1;
+    uint32 chat_id = 1;
+    string description = 2;
+    repeated uint64 users = 3;
 }
 
 message Invitation {
     uint32 chat_id = 1;
-    uint32 session_id = 2;
-}
-
-message Session {
-    uint32 id = 1;
+    uint64 user_id = 2;
 }
 
 message Result {
@@ -120,7 +112,7 @@ message Attachment {
 
 message Post {
     uint32 chat_id = 1;
-    uint32 session_id = 2;
+    uint64 user_id = 2;
     string text = 3;
     repeated Attachment attachments = 4;
 }

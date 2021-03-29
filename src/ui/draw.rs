@@ -3,13 +3,8 @@ use tui::{
     backend::Backend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    symbols,
-    text::{Span, Spans},
-    widgets::canvas::{Canvas, Line, Map, MapResolution, Rectangle},
-    widgets::{
-        Axis, BarChart, Block, Borders, Cell, Chart, Clear, Dataset, Gauge, LineGauge, List,
-        ListItem, Paragraph, Row, Sparkline, Table, Tabs, Wrap,
-    },
+    text::Span,
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
     Frame,
 };
 use tui_logger::{TuiLoggerSmartWidget, TuiLoggerWidget};
@@ -78,8 +73,8 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     //
     let chats: Vec<ListItem> = app
         .chats
-        .iter()
-        .map(|c| ListItem::new(format!("chat #{}", c.id)))
+        .values()
+        .map(|c| ListItem::new(format!("chat #{}", c.chat_id)))
         .collect();
     let chats = List::new(chats)
         .block(Block::default().borders(Borders::ALL).title("Chats"))
@@ -156,6 +151,7 @@ fn get_style(state: WidgetState) -> Style {
 
 /// helper function to create a centered rect using up
 /// certain percentage of the available rect `r`
+#[allow(dead_code)]
 fn centered_rect(width: u16, height: u16, r: Rect) -> Rect {
     let top_pad = (r.height - r.height.min(height)) / 2;
     let popup_layout = Layout::default()

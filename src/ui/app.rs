@@ -1,7 +1,7 @@
 use crate::proto;
 use crate::Command;
 use log::error;
-use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tui::widgets::ListState;
 use tui_logger::{TuiWidgetEvent, TuiWidgetState};
@@ -60,7 +60,7 @@ pub struct App {
     pub title: String,
     pub users: Vec<proto::User>,
     pub users_state: ListState,
-    pub chats: Vec<proto::Chat>,
+    pub chats: HashMap<u32, proto::Chat>,
     pub chats_state: ListState,
     pub posts: Vec<proto::Post>,
     pub posts_state: ListState,
@@ -84,7 +84,7 @@ impl App {
             title: "MiGChat".to_string(),
             users: Vec::new(),
             users_state: ListState::default(),
-            chats: Vec::new(),
+            chats: HashMap::new(),
             chats_state: ListState::default(),
             posts: Vec::with_capacity(128),
             posts_state: ListState::default(),
@@ -195,11 +195,11 @@ impl App {
                         InputResult::NewChat => {
                             if let Err(e) = self.tx_command.blocking_send(Command::CreateChat(
                                 proto::ChatInfo {
+                                    user_id: 0, // will be set bby service
                                     permanent: true,
                                     auto_enter: true,
                                     description: input.text.clone(),
-                                    required: Vec::new(),
-                                    optional: Vec::new(),
+                                    desired_users: Vec::new(),
                                 },
                             )) {
                                 error!("failed creating chat: {}", e);
@@ -404,5 +404,17 @@ impl App {
 
     pub fn on_user_entered(&mut self, user: proto::User) {
         self.users.push(user);
+    }
+
+    pub fn on_chat_updated(&mut self, chat: proto::Chat) {
+        let _prev = self.chats.insert(chat.chat_id, chat);
+    }
+
+    pub fn on_get_invited(&mut self, invitation: proto::Invitation) {
+        //todo: ask user about invitation
+        error!(
+            "handling invitations is not implemented yet, drop: {:?}",
+            &invitation
+        );
     }
 }
