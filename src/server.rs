@@ -45,15 +45,28 @@ impl ChatRoomService for ChatRoomImpl {
         debug!("register: {:?}", &request);
         let user_info = request.into_inner();
         let user_id = hash64(&user_info);
+        let new_user = User {
+            user_id,
+            name: user_info.name,
+            short_name: user_info.short_name,
+        };
+        let mut send_list = Vec::new();
+        if let Ok(listeners) = self.users_listeners.lock() {
+            for listener in listeners.iter() {
+                send_list.push(listener.clone());
+            }
+        }
+        if !send_list.is_empty() {
+            let send_user = Arc::new(new_user.clone());
+            for tx in send_list {
+                if let Err(e) = tx.send(send_user.clone()).await {
+                    error!("failed to broadcast new user: {}", e);
+                    //no break;
+                }
+            }
+        }
         if let Ok(mut locked) = self.users.write() {
-            let _ = locked.insert(
-                user_id,
-                User {
-                    user_id,
-                    name: user_info.name,
-                    short_name: user_info.short_name,
-                },
-            );
+            let _ = locked.insert(user_id, new_user);
             // Send back our formatted greeting
             Ok(Response::new(Registration { user_id }))
         } else {
@@ -250,24 +263,39 @@ impl ChatRoomService for ChatRoomImpl {
         &self,
         request: tonic::Request<ChatInfo>,
     ) -> Result<tonic::Response<Chat>, tonic::Status> {
-        if let Ok(mut chats) = self.chats.write() {
-            let info = request.get_ref();
-            let users = if info.auto_enter {
-                vec![info.user_id]
-                // todo: auto include desired users
-            } else {
-                Vec::new()
-            };
-            let chat = proto::Chat {
-                chat_id: self.next_chat_id.fetch_add(1, Ordering::SeqCst),
-                description: info.description.clone(),
-                users,
-            };
-            chats.insert(chat.chat_id, chat.clone());
-            Ok(Response::new(chat))
+        let info = request.get_ref();
+        let users = if info.auto_enter {
+            vec![info.user_id]
+            // todo: auto include desired users
         } else {
-            Err(tonic::Status::internal("failed to access chats"))
+            Vec::new()
+        };
+        let chat = proto::Chat {
+            chat_id: self.next_chat_id.fetch_add(1, Ordering::SeqCst),
+            description: info.description.clone(),
+            users,
+        };
+        if let Ok(mut chats) = self.chats.write() {
+            chats.insert(chat.chat_id, chat.clone());
+        } else {
+            return Err(tonic::Status::internal("failed to access chats"));
         }
+        let mut send_list = Vec::new();
+        if let Ok(listeners) = self.chats_listeners.lock() {
+            for listener in listeners.iter() {
+                send_list.push(listener.clone());
+            }
+        }
+        if !send_list.is_empty() {
+            let send_chat = Arc::new(chat.clone());
+            for tx in send_list {
+                if let Err(e) = tx.send(send_chat.clone()).await {
+                    error!("failed to broadcast new chat: {}", e);
+                    // no break;
+                }
+            }
+        }
+        Ok(Response::new(chat))
     }
 
     #[doc = " Invites user to chat"]
