@@ -1,7 +1,6 @@
 use crate::proto;
 use crate::Command;
 use log::error;
-use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tui::widgets::ListState;
 use tui_logger::{TuiWidgetEvent, TuiWidgetState};
