@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 use tonic::transport::Endpoint;
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event as CEvent, KeyCode},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event as CEvent, KeyCode, KeyEvent},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -34,9 +34,14 @@ const CONFIG: &str = "config";
 const CONFIG_DEF: &str = "client.toml";
 const CONFIG_ENV: &str = "MIGC";
 
-enum Event<I> {
-    Input(I),
+// Events
+pub enum Event {
+    // crossterm input events, keyboard
+    Input(KeyEvent),
+    // timer ticks
     Tick,
+    // gRPC client events
+    Client(ChatRoomEvent),
 }
 
 #[tokio::main]
@@ -90,11 +95,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let exit_flag = Arc::new(AtomicBool::new(false));
 
+    // intercom channels
+    let (tx_event, mut rx_event) = mpsc::channel::<Event>(16);
+    let (tx_command, rx_command) = mpsc::channel::<Command>(16);
+
     // launch input / ticks handler
-    let (tx_event, mut rx_event) = mpsc::channel(16);
     let tick_rate = Duration::from_millis(250);
     let exit_flag_copy = exit_flag.clone();
-    tokio::spawn(async move {
+    let tx_event_copy = tx_event.clone();
+    let event_handler = tokio::spawn(async move {
         let mut last_tick = Instant::now();
         loop {
             // poll for tick rate duration, if no events, sent tick event.
@@ -103,32 +112,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(|| Duration::from_secs(0));
             if event::poll(timeout).unwrap() {
                 if let CEvent::Key(key) = event::read().unwrap() {
-                    if tx_event.send(Event::Input(key)).await.is_err() {
-                        print!("failed sending key");
+                    if tx_event_copy.send(Event::Input(key)).await.is_err() {
+                        error!("failed sending key");
                         break;
                     }
                 }
             }
             if last_tick.elapsed() >= tick_rate {
-                if tx_event.send(Event::Tick).await.is_err() {
-                    print!("failed sending tick");
+                if tx_event_copy.send(Event::Tick).await.is_err() {
                     break;
                 }
                 last_tick = Instant::now();
             }
             if exit_flag_copy.load(Ordering::SeqCst) {
-                print!("exit flag is set");
                 break;
             }
         }
-        print!("event handler is closed");
+        println!("exitting event handler");
     });
 
     // launch client
-    let mut client = MigchatClient::new(&settings);
+    let mut client = MigchatClient::new(&settings, rx_command);
     let exit_flag_copy = exit_flag.clone();
-    tokio::spawn(async move {
-        let _ = client.launch(exit_flag_copy).await;
+    let chat_service = tokio::spawn(async move {
+        let _ = client.launch(tx_event, exit_flag_copy).await;
+        println!("exitting chat service");
     });
 
     // launch UI
@@ -136,28 +144,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         name: settings.get_str("name").unwrap_or("Anonimous".to_string()),
         short_name: settings.get_str("short_name").unwrap_or("Nemo".to_string()),
     };
-    let mut next_id = 100;
-    let mut test_users = Vec::new();
-    if let Ok(config_test_users) = settings.get_array("test_users") {
-        for item in config_test_users {
-            if let Ok(names) = item.into_array() {
-                if names.len() == 2 {
-                    test_users.push(proto::User {
-                        session_id: next_id,
-                        name: names[0].to_string(),
-                        short_name: names[1].to_string(),
-                    });
-                    next_id += 1;
-                }
-            }
-        }
-    }
-    let users: ui::SharedUsers = Arc::new(Mutex::new(test_users));
-    let chats: ui::SharedChats = Arc::new(Mutex::new(Vec::new()));
-    let posts: ui::SharedPosts = Arc::new(Mutex::new(Vec::new()));
-    let users_copy = users.clone();
-    let chats_copy = chats.clone();
-    let posts_copy = posts.clone();
     let extended_log = settings.get_bool("extended_log").unwrap_or(false);
     tokio::task::block_in_place(move || {
         if enable_raw_mode().is_ok() {
@@ -166,11 +152,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let backend = CrosstermBackend::new(stdout);
                 if let Ok(mut terminal) = Terminal::new(backend) {
                     if terminal.clear().is_ok() {
-                        let mut app =
-                            ui::App::new(user, users_copy, chats_copy, posts_copy, extended_log);
+                        let mut app = ui::App::new(user, tx_command, extended_log);
                         loop {
                             if terminal.draw(|f| ui::draw(f, &mut app)).is_err() {
-                                print!("failed drawing UI");
+                                println!("failed drawing UI");
                                 break;
                             }
                             if let Some(event) = rx_event.blocking_recv() {
@@ -201,6 +186,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     Event::Tick => {
                                         app.on_tick();
                                     }
+                                    Event::Client(chat_event) => match chat_event {
+                                        ChatRoomEvent::UserEntered(user) => {
+                                            app.on_user_entered(user);
+                                        }
+                                        _ => {
+                                            error!(
+                                                "handling this chat event is not implemented yet"
+                                            );
+                                        }
+                                    },
                                 }
                             } else {
                                 break;
@@ -210,41 +205,93 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        println!("exitting TUI");
     });
 
-    print!("exitting migchat-client\n");
+    let _ = chat_service.await;
+    let _ = event_handler.await;
+    println!("exitting migchat-client application");
     Ok(())
 }
 
-type SharedInvitations = Arc<Mutex<Vec<proto::Invitation>>>;
+pub enum ChatRoomEvent {
+    UserEntered(proto::User),      // session_id, name, short_name
+    UserGone(u32),                 // session_id
+    ChatUpdated(proto::Chat),      // chat_id
+    ChatDeleted(u32),              // chat_id
+    Invitation(proto::Invitation), // session_id (=user), chat_id
+    NewPost(proto::Post),          // chat_id, session_id (=user), text, [attachments]
+}
+
+pub enum Command {
+    CreateChat(proto::ChatInfo), // create new chat
+    Invite(proto::Invitation),   // invite user to chat
+    Post(proto::Post),           // send new post
+    Exit,                        // exit chat room
+}
 
 struct MigchatClient {
     name: String,
     short_name: String,
     login: Option<Session>,
-    invitations: SharedInvitations,
+    rx_command: mpsc::Receiver<Command>,
+    test_users: Option<Vec<proto::User>>,
 }
 
 impl MigchatClient {
-    fn new(settings: &Config) -> Self {
+    fn new(settings: &Config, rx_command: mpsc::Receiver<Command>) -> Self {
         let name = settings.get_str("name").unwrap_or("Anonimous".to_string());
         let short_name = settings.get_str("short_name").unwrap_or("Nemo".to_string());
+        // if there are test users in settings, create them
+        let test_users = if let Ok(config_test_users) = settings.get_array("test_users") {
+            let mut next_id = 100;
+            let mut test_users = Vec::new();
+            for item in config_test_users {
+                if let Ok(names) = item.into_array() {
+                    if names.len() == 2 {
+                        test_users.push(proto::User {
+                            session_id: next_id,
+                            name: names[0].to_string(),
+                            short_name: names[1].to_string(),
+                        });
+                        next_id += 1;
+                    }
+                }
+            }
+            Some(test_users)
+        } else {
+            None
+        };
+
         MigchatClient {
             name,
             short_name,
             login: None,
-            invitations: Arc::new(Mutex::new(Vec::new())),
+            rx_command,
+            test_users,
         }
     }
 
     async fn launch(
         &mut self,
+        tx_event: mpsc::Sender<Event>,
         exit_flag: Arc<AtomicBool>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let channel = Endpoint::from_static("http://0.0.0.0:50051")
             .timeout(Duration::from_secs(10))
             .connect()
             .await?;
+
+        if let Some(test_users) = self.test_users.take() {
+            for u in test_users {
+                if let Err(e) = tx_event
+                    .send(Event::Client(ChatRoomEvent::UserEntered(u)))
+                    .await
+                {
+                    error!("failed send test user: {}", e);
+                }
+            }
+        }
 
         let mut client = ChatRoomServiceClient::new(channel);
 
@@ -255,6 +302,7 @@ impl MigchatClient {
         };
         info!("registering as {:?}", user_info);
         let reg_req = tonic::Request::new(user_info);
+
         if let Ok(reg_res) = client.register(reg_req).await {
             if let Some(own_uuid) = reg_res.into_inner().uuid {
                 //
@@ -273,7 +321,6 @@ impl MigchatClient {
                     //
                     // launch accepting invitations in separate task
                     //
-                    let invitations = self.invitations.clone();
                     let req_invitations = RequestInvitations { session_id };
                     tokio::spawn(async move {
                         match client
@@ -283,16 +330,17 @@ impl MigchatClient {
                             Ok(response) => {
                                 let mut stream = response.into_inner();
                                 while let Some(invitation) = stream.message().await.ok().flatten() {
-                                    debug!("invitation: {:?}", &invitation);
-                                    if let Ok(mut invitations) = invitations.lock() {
-                                        invitations.push(invitation);
-                                    } else {
-                                        error!("failed access invitations");
+                                    debug!("new invitation: {:?}", &invitation);
+                                    if let Err(e) = tx_event
+                                        .send(Event::Client(ChatRoomEvent::Invitation(invitation)))
+                                        .await
+                                    {
+                                        error!("failed to transfer invitation to UI {}", e);
                                     }
                                 }
                             }
                             Err(e) => {
-                                warn!("no more invitations: {:?}", e);
+                                warn!("no more invitations: {}", e);
                             }
                         }
                     });
@@ -306,9 +354,43 @@ impl MigchatClient {
             warn!("registration failed");
         }
 
-        while !exit_flag.load(Ordering::SeqCst) {
-            tokio::time::sleep(Duration::from_millis(250)).await;
+        loop {
+            match tokio::time::timeout(Duration::from_millis(500), self.rx_command.recv()).await {
+                Err(_) => {
+                    // timeout
+                    if exit_flag.load(Ordering::SeqCst) {
+                        break;
+                    }
+                }
+                Ok(command) => match command {
+                    Some(command) => match command {
+                        Command::CreateChat(_info) => {
+                            error!("creating chat is not implemented yet");
+                        }
+                        Command::Invite(_invitation) => {
+                            error!("inviting others is not implemented yet");
+                        }
+                        Command::Post(_post) => {
+                            error!("sendibng posts is not omplementing yet");
+                        }
+                        Command::Exit => {
+                            error!("exitting chat room is not implemented yet");
+                        }
+                    },
+                    None => {
+                        info!("command channel has closed by receiver");
+                        break;
+                    }
+                },
+            }
         }
+        // tokio::select! {
+        //     _ = tokio::time::timeout(Duration::from_millis(250)) => {},
+        //     Command() = self.rx_command.recv()
+        // }
+        // while !exit_flag.load(Ordering::SeqCst) {
+        //     tokio::time::sleep().await;
+        // }
         info!("exitting, bye!");
 
         Ok(())

@@ -120,7 +120,7 @@ message Attachment {
 
 message Post {
     uint32 chat_id = 1;
-    uint32 contact_id = 2;
+    uint32 session_id = 2;
     string text = 3;
     repeated Attachment attachments = 4;
 }
