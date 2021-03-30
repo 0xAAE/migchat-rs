@@ -8,7 +8,7 @@ use std::{
     pin::Pin,
     sync::{
         atomic::{AtomicU32, Ordering},
-        Arc, Mutex, RwLock,
+        Arc, RwLock,
     },
 };
 use tokio::sync::mpsc;
@@ -27,13 +27,19 @@ use proto::{
 #[derive(Debug, Default)]
 pub struct ChatRoomImpl {
     next_chat_id: AtomicU32,
+    // user_id -> user info:
     users: RwLock<HashMap<u64, User>>,
-    users_listeners: RwLock<Vec<mpsc::Sender<Arc<User>>>>,
-    // user_id -> invitation listener:
-    invitations_listeners: RwLock<HashMap<u64, mpsc::Sender<Invitation>>>,
     // chat_id -> chat info:
     chats: RwLock<HashMap<u32, proto::Chat>>,
-    chats_listeners: RwLock<Vec<mpsc::Sender<Arc<Chat>>>>,
+    //
+    // listeners, all are linked to the appropriate user_id
+    //
+    // new users:
+    users_listeners: RwLock<HashMap<u64, mpsc::Sender<Arc<User>>>>,
+    // new invitations:
+    invitations_listeners: RwLock<HashMap<u64, mpsc::Sender<Invitation>>>,
+    // new chats:
+    chats_listeners: RwLock<HashMap<u64, mpsc::Sender<Arc<Chat>>>>,
 }
 
 impl ChatRoomImpl {}
@@ -52,7 +58,7 @@ impl ChatRoomService for ChatRoomImpl {
         };
         let mut send_list = Vec::new();
         if let Ok(listeners) = self.users_listeners.read() {
-            for listener in listeners.iter() {
+            for listener in listeners.values() {
                 send_list.push(listener.clone());
             }
         }
@@ -67,7 +73,6 @@ impl ChatRoomService for ChatRoomImpl {
         }
         if let Ok(mut locked) = self.users.write() {
             let _ = locked.insert(user_id, new_user);
-            // Send back our formatted greeting
             Ok(Response::new(Registration { user_id }))
         } else {
             Err(tonic::Status::internal("no access to registration info"))
@@ -138,10 +143,10 @@ impl ChatRoomService for ChatRoomImpl {
         &self,
         request: tonic::Request<RequestUsers>,
     ) -> Result<tonic::Response<Self::GetUsersStream>, tonic::Status> {
-        let subscriber_id = request.into_inner().user_id;
+        let user_id = request.into_inner().user_id;
         let (listener, notifier) = mpsc::channel::<Arc<User>>(4);
         if let Ok(mut listeners) = self.users_listeners.write() {
-            listeners.push(listener.clone());
+            listeners.insert(user_id, listener.clone());
         } else {
             return Err(tonic::Status::internal("no access to users listeners"));
         }
@@ -149,7 +154,7 @@ impl ChatRoomService for ChatRoomImpl {
         let mut existing = Vec::new();
         if let Ok(users) = self.users.read() {
             for user in users.values() {
-                if user.user_id != subscriber_id {
+                if user.user_id != user_id {
                     existing.push(user.clone());
                 }
             }
@@ -168,7 +173,7 @@ impl ChatRoomService for ChatRoomImpl {
                 debug!(
                     "sending {} existing users to user-{}",
                     start_update.added.len(),
-                    subscriber_id
+                    user_id
                 );
                 if let Err(e) = tx.send(Ok(start_update)).await {
                     error!("failed sending existing users: {}", e);
@@ -177,7 +182,7 @@ impl ChatRoomService for ChatRoomImpl {
             // re-translate new users
             let mut notifier = notifier;
             while let Some(user) = notifier.recv().await {
-                debug!("re-translating new user to user-{}", subscriber_id);
+                debug!("re-translating new user to user-{}", user_id);
                 let update = UpdateUsers {
                     added: vec![user.deref().clone()],
                     gone: Vec::new(),
@@ -206,7 +211,7 @@ impl ChatRoomService for ChatRoomImpl {
         let user_id = request.into_inner().user_id;
         let (listener, notifier) = mpsc::channel::<Arc<Chat>>(4);
         if let Ok(mut listeners) = self.chats_listeners.write() {
-            listeners.push(listener.clone());
+            listeners.insert(user_id, listener.clone());
         } else {
             // failed locking listeners
             return Err(tonic::Status::internal("no access to chat listeners"));
@@ -282,7 +287,7 @@ impl ChatRoomService for ChatRoomImpl {
         }
         let mut send_list = Vec::new();
         if let Ok(listeners) = self.chats_listeners.read() {
-            for listener in listeners.iter() {
+            for listener in listeners.values() {
                 send_list.push(listener.clone());
             }
         }
