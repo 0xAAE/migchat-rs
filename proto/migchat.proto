@@ -87,8 +87,9 @@ message Chat {
 }
 
 message Invitation {
-    uint32 chat_id = 1;
-    uint64 user_id = 2;
+    uint64 from_user_id = 1;
+    uint64 to_user_id = 2;
+    uint32 chat_id = 3;
 }
 
 message Result {

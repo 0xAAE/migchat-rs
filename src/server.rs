@@ -340,9 +340,53 @@ impl ChatRoomService for ChatRoomImpl {
         request: tonic::Request<Invitation>,
     ) -> Result<tonic::Response<RpcResult>, tonic::Status> {
         debug!("invite_user(): {:?}", &request);
-        Err(tonic::Status::unimplemented(
-            "invite_user() is not implemented yet",
-        ))
+        let invitation = request.into_inner();
+        // test chat exists
+        if let Ok(chats) = self.chats.read() {
+            if !chats.contains_key(&invitation.chat_id) {
+                return Err(tonic::Status::not_found(format!(
+                    "chat {} does not exist",
+                    invitation.chat_id
+                )));
+            }
+        } else {
+            return Err(tonic::Status::internal("failed read chats"));
+        }
+        // test recepient exists
+        if let Ok(users) = self.users.read() {
+            if !users.contains_key(&invitation.to_user_id) {
+                return Err(tonic::Status::not_found(format!(
+                    "user-{} is not registered",
+                    invitation.to_user_id
+                )));
+            }
+        } else {
+            return Err(tonic::Status::internal("failed read users"));
+        }
+        // try to get send channel and send invitation
+        let tx = if let Ok(listeners) = self.invitations_listeners.read() {
+            if let Some(tx) = listeners.get(&invitation.to_user_id) {
+                tx.clone()
+            } else {
+                return Err(tonic::Status::not_found(format!(
+                    "user-{} did not subscribe to invitations",
+                    invitation.to_user_id
+                )));
+            }
+        } else {
+            return Err(tonic::Status::internal(
+                "failed read invitation subscribers",
+            ));
+        };
+        if let Err(e) = tx.send(invitation).await {
+            error!("failed to send invitation: {}", e);
+            Err(tonic::Status::internal("failed to send invitation"))
+        } else {
+            Ok(Response::new(RpcResult {
+                ok: true,
+                description: "invitation has been sent".to_string(),
+            }))
+        }
     }
 
     #[doc = " Enters the chat"]
