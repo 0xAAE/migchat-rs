@@ -48,7 +48,7 @@ impl ChatRoomImpl {}
 impl ChatRoomService for ChatRoomImpl {
     #[doc = " Sends a reqistration request"]
     async fn register(&self, request: Request<UserInfo>) -> Result<Response<Registration>, Status> {
-        debug!("register: {:?}", &request);
+        debug!("register(): {:?}", &request);
         let user_info = request.into_inner();
         let user_id = hash64(&user_info);
         let new_user = User {
@@ -89,10 +89,11 @@ impl ChatRoomService for ChatRoomImpl {
         request: tonic::Request<RequestInvitations>,
     ) -> Result<tonic::Response<Self::GetInvitationsStream>, tonic::Status> {
         // get source channel of invitations
-        debug!("get_invitations: {:?}", request);
+        debug!("get_invitations(): {:?}", &request);
+        let user_id = request.into_inner().user_id;
         let rx_invit = if let Ok(mut locked) = self.invitations_listeners.write() {
             let (tx_invit, rx_invit) = mpsc::channel(4);
-            locked.insert(request.into_inner().user_id, tx_invit);
+            locked.insert(user_id, tx_invit);
             rx_invit
         } else {
             return Err(tonic::Status::internal("no access to invitation channel"));
@@ -104,6 +105,7 @@ impl ChatRoomService for ChatRoomImpl {
             while let Some(invitation) = rx_invit.recv().await {
                 tx.send(Ok(invitation)).await.unwrap();
             }
+            debug!("stop streaming invitations to user-{}", user_id);
         });
         Ok(Response::new(Box::pin(
             tokio_stream::wrappers::ReceiverStream::new(rx),
@@ -113,11 +115,34 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = " Sends a logout request using the first invitation from the server"]
     async fn logout(
         &self,
-        _request: tonic::Request<Registration>,
+        request: tonic::Request<Registration>,
     ) -> Result<tonic::Response<RpcResult>, tonic::Status> {
-        Err(tonic::Status::unimplemented(
-            "logout() is not implemented yet",
-        ))
+        debug!("logout(): {:?}", &request);
+        let user_id = request.into_inner().user_id;
+        if let Ok(mut listeners) = self.users_listeners.write() {
+            let _ = listeners.remove(&user_id);
+        } else {
+            error!("failed locking users listeners (logout)");
+        }
+        if let Ok(mut listeners) = self.chats_listeners.write() {
+            let _ = listeners.remove(&user_id);
+        } else {
+            error!("failed locking chats listeners (logout)");
+        }
+        if let Ok(mut listeners) = self.invitations_listeners.write() {
+            let _ = listeners.remove(&user_id);
+        } else {
+            error!("failed locking invitations listeners (logout)");
+        }
+        if let Ok(mut users) = self.users.write() {
+            let _ = users.remove(&user_id);
+        } else {
+            error!("failed locking users (logout)");
+        }
+        Ok(Response::new(RpcResult {
+            ok: true,
+            description: "logout successful".to_string(),
+        }))
     }
 
     #[doc = "Server streaming response type for the StartChating method."]
@@ -127,8 +152,9 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = " Starts chating"]
     async fn start_chating(
         &self,
-        _request: tonic::Request<tonic::Streaming<Post>>,
+        request: tonic::Request<tonic::Streaming<Post>>,
     ) -> Result<tonic::Response<Self::StartChatingStream>, tonic::Status> {
+        debug!("start_chating(): {:?}", &request);
         Err(tonic::Status::unimplemented(
             "start_chating() is not implemented yet",
         ))
@@ -143,6 +169,7 @@ impl ChatRoomService for ChatRoomImpl {
         &self,
         request: tonic::Request<RequestUsers>,
     ) -> Result<tonic::Response<Self::GetUsersStream>, tonic::Status> {
+        debug!("get_users(): {:?}", &request);
         let user_id = request.into_inner().user_id;
         let (listener, notifier) = mpsc::channel::<Arc<User>>(4);
         if let Ok(mut listeners) = self.users_listeners.write() {
@@ -161,7 +188,7 @@ impl ChatRoomService for ChatRoomImpl {
         } else {
             error!("failed to read existing users");
         }
-        // start permanent listener, streaming data producer
+        // start permanent listener that streams data to remote client
         let (tx, rx) = mpsc::channel(4);
         tokio::spawn(async move {
             if !existing.is_empty() {
@@ -192,6 +219,7 @@ impl ChatRoomService for ChatRoomImpl {
                     break;
                 }
             }
+            debug!("stop streaming users to user-{}", user_id);
         });
         // start streaming activity, data consumer
         Ok(Response::new(Box::pin(
@@ -208,6 +236,7 @@ impl ChatRoomService for ChatRoomImpl {
         &self,
         request: tonic::Request<RequestChats>,
     ) -> Result<tonic::Response<Self::GetChatsStream>, tonic::Status> {
+        debug!("get_chats(): {:?}", &request);
         let user_id = request.into_inner().user_id;
         let (listener, notifier) = mpsc::channel::<Arc<Chat>>(4);
         if let Ok(mut listeners) = self.chats_listeners.write() {
@@ -225,7 +254,7 @@ impl ChatRoomService for ChatRoomImpl {
         } else {
             error!("failed to read existing chats");
         }
-        // start permanent listener, streaming data producer
+        // start permanent listener that streams data to remote client
         let (tx, rx) = mpsc::channel(4);
         tokio::spawn(async move {
             if !existing.is_empty() {
@@ -256,6 +285,7 @@ impl ChatRoomService for ChatRoomImpl {
                     break;
                 }
             }
+            debug!("stop streaming chats to user-{}", user_id);
         });
         // start streaming activity, data consumer
         Ok(Response::new(Box::pin(
@@ -268,6 +298,7 @@ impl ChatRoomService for ChatRoomImpl {
         &self,
         request: tonic::Request<ChatInfo>,
     ) -> Result<tonic::Response<Chat>, tonic::Status> {
+        debug!("create_chat(): {:?}", &request);
         let info = request.get_ref();
         let users = if info.auto_enter {
             vec![info.user_id]
@@ -306,8 +337,9 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = " Invites user to chat"]
     async fn invite_user(
         &self,
-        _request: tonic::Request<Invitation>,
+        request: tonic::Request<Invitation>,
     ) -> Result<tonic::Response<RpcResult>, tonic::Status> {
+        debug!("invite_user(): {:?}", &request);
         Err(tonic::Status::unimplemented(
             "invite_user() is not implemented yet",
         ))
@@ -316,8 +348,9 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = " Enters the chat"]
     async fn enter_chat(
         &self,
-        _request: tonic::Request<Chat>,
+        request: tonic::Request<Chat>,
     ) -> Result<tonic::Response<RpcResult>, tonic::Status> {
+        debug!("enter_chat(): {:?}", &request);
         Err(tonic::Status::unimplemented(
             "enter_chat() is not implemented yet",
         ))
@@ -326,8 +359,9 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = " Leaves active chat"]
     async fn leave_chat(
         &self,
-        _request: tonic::Request<Chat>,
+        request: tonic::Request<Chat>,
     ) -> Result<tonic::Response<RpcResult>, tonic::Status> {
+        debug!("leave_chat(): {:?}", &request);
         Err(tonic::Status::unimplemented(
             "leave_chat() is not implemented yet",
         ))
