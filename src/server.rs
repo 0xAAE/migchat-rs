@@ -19,8 +19,9 @@ mod proto;
 
 use proto::chat_room_service_server::{ChatRoomService, ChatRoomServiceServer};
 use proto::{
-    Chat, ChatInfo, Invitation, Post, Registration, RequestChats, RequestInvitations, RequestUsers,
-    Result as RpcResult, UpdateChats, UpdateUsers, User, UserInfo,
+    Chat, ChatInfo, ChatReference, Invitation, Post, Registration, RequestChats,
+    RequestInvitations, RequestUsers, Result as RpcResult, UpdateChats, UpdateUsers, User,
+    UserInfo,
 };
 //use user::User;
 
@@ -42,7 +43,51 @@ pub struct ChatRoomImpl {
     chats_listeners: RwLock<HashMap<u64, mpsc::Sender<Arc<Chat>>>>,
 }
 
-impl ChatRoomImpl {}
+impl ChatRoomImpl {
+    async fn notify_chat_updated(&self, chat: Chat) {
+        let mut send_list = Vec::new();
+        if let Ok(listeners) = self.chats_listeners.read() {
+            for listener in listeners.values() {
+                send_list.push(listener.clone());
+            }
+        }
+        if !send_list.is_empty() {
+            let send_chat = Arc::new(chat);
+            for tx in send_list {
+                if let Err(e) = tx.send(send_chat.clone()).await {
+                    error!("failed to broadcast new chat: {}", e);
+                    // no break;
+                }
+            }
+        }
+    }
+
+    async fn notify_chat_closed(&self, _chat_id: u32) {
+        //todo: implement notifying through "chat updated" channel
+    }
+
+    async fn notify_user_entered(&self, user: User) {
+        let mut send_list = Vec::new();
+        if let Ok(listeners) = self.users_listeners.read() {
+            for listener in listeners.values() {
+                send_list.push(listener.clone());
+            }
+        }
+        if !send_list.is_empty() {
+            let send_user = Arc::new(user);
+            for tx in send_list {
+                if let Err(e) = tx.send(send_user.clone()).await {
+                    error!("failed to broadcast new user: {}", e);
+                    //no break;
+                }
+            }
+        }
+    }
+
+    async fn notify_user_gone(&self, _user_id: u64) {
+        //todo: implement sending gone info through listeners (enum?)
+    }
+}
 
 #[tonic::async_trait]
 impl ChatRoomService for ChatRoomImpl {
@@ -56,21 +101,7 @@ impl ChatRoomService for ChatRoomImpl {
             name: user_info.name,
             short_name: user_info.short_name,
         };
-        let mut send_list = Vec::new();
-        if let Ok(listeners) = self.users_listeners.read() {
-            for listener in listeners.values() {
-                send_list.push(listener.clone());
-            }
-        }
-        if !send_list.is_empty() {
-            let send_user = Arc::new(new_user.clone());
-            for tx in send_list {
-                if let Err(e) = tx.send(send_user.clone()).await {
-                    error!("failed to broadcast new user: {}", e);
-                    //no break;
-                }
-            }
-        }
+        self.notify_user_entered(new_user.clone()).await;
         if let Ok(mut locked) = self.users.write() {
             let _ = locked.insert(user_id, new_user);
             Ok(Response::new(Registration { user_id }))
@@ -139,9 +170,10 @@ impl ChatRoomService for ChatRoomImpl {
         } else {
             error!("failed locking users (logout)");
         }
+        self.notify_user_gone(user_id).await;
         Ok(Response::new(RpcResult {
             ok: true,
-            description: "logout successful".to_string(),
+            description: String::from("logout successful"),
         }))
     }
 
@@ -308,6 +340,7 @@ impl ChatRoomService for ChatRoomImpl {
         };
         let chat = proto::Chat {
             chat_id: self.next_chat_id.fetch_add(1, Ordering::SeqCst),
+            permanent: info.permanent,
             description: info.description.clone(),
             users,
         };
@@ -316,21 +349,7 @@ impl ChatRoomService for ChatRoomImpl {
         } else {
             return Err(tonic::Status::internal("failed to access chats"));
         }
-        let mut send_list = Vec::new();
-        if let Ok(listeners) = self.chats_listeners.read() {
-            for listener in listeners.values() {
-                send_list.push(listener.clone());
-            }
-        }
-        if !send_list.is_empty() {
-            let send_chat = Arc::new(chat.clone());
-            for tx in send_list {
-                if let Err(e) = tx.send(send_chat.clone()).await {
-                    error!("failed to broadcast new chat: {}", e);
-                    // no break;
-                }
-            }
-        }
+        self.notify_chat_updated(chat.clone()).await;
         Ok(Response::new(chat))
     }
 
@@ -392,23 +411,65 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = " Enters the chat"]
     async fn enter_chat(
         &self,
-        request: tonic::Request<Chat>,
+        request: tonic::Request<ChatReference>,
     ) -> Result<tonic::Response<RpcResult>, tonic::Status> {
         debug!("enter_chat(): {:?}", &request);
-        Err(tonic::Status::unimplemented(
-            "enter_chat() is not implemented yet",
-        ))
+        let chat_ref = request.into_inner();
+        let chat = if let Ok(mut chats) = self.chats.write() {
+            if let Some(chat) = chats.get_mut(&chat_ref.chat_id) {
+                if !chat.users.contains(&chat_ref.user_id) {
+                    chat.users.push(chat_ref.user_id);
+                    chat.clone()
+                } else {
+                    return Err(tonic::Status::already_exists("already in the chat"));
+                }
+            } else {
+                return Err(tonic::Status::not_found("chat does not exist"));
+            }
+        } else {
+            return Err(tonic::Status::internal("failed access chats (enter_chat)"));
+        };
+        self.notify_chat_updated(chat).await;
+        Ok(Response::new(RpcResult {
+            ok: true,
+            description: String::from("entered the chat"),
+        }))
     }
 
     #[doc = " Leaves active chat"]
     async fn leave_chat(
         &self,
-        request: tonic::Request<Chat>,
+        request: tonic::Request<ChatReference>,
     ) -> Result<tonic::Response<RpcResult>, tonic::Status> {
         debug!("leave_chat(): {:?}", &request);
-        Err(tonic::Status::unimplemented(
-            "leave_chat() is not implemented yet",
-        ))
+        let chat_ref = request.into_inner();
+        let chat = if let Ok(mut chats) = self.chats.write() {
+            if let Some(chat) = chats.get_mut(&chat_ref.chat_id) {
+                if chat.users.contains(&chat_ref.user_id) {
+                    chat.users.retain(|&id| id != chat_ref.user_id);
+                    chat.clone()
+                } else {
+                    return Err(tonic::Status::already_exists("user not in the chat"));
+                }
+            } else {
+                return Err(tonic::Status::not_found("chat does not exist"));
+            }
+        } else {
+            return Err(tonic::Status::internal("failed access chats (enter_chat)"));
+        };
+        if !chat.permanent && chat.users.is_empty() {
+            //remove chat
+            if let Ok(mut chats) = self.chats.write() {
+                let _ = chats.remove(&chat_ref.chat_id);
+            }
+            self.notify_chat_closed(chat_ref.chat_id).await;
+        } else {
+            self.notify_chat_updated(chat).await;
+        }
+        Ok(Response::new(RpcResult {
+            ok: true,
+            description: String::from("entered the chat"),
+        }))
     }
 }
 
