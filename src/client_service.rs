@@ -131,6 +131,18 @@ impl MigchatClient {
             warn!("registration failed");
         }
 
+        // create channel with large timeout
+        let (tx_post, rx_post) = mpsc::channel(4);
+        {
+            let channel = Endpoint::from_static("http://0.0.0.0:50051")
+                .timeout(Duration::from_secs(24 * 3600))
+                .connect()
+                .await?;
+            let client = ChatRoomServiceClient::new(channel);
+            MigchatClient::launch_chating(client, tx_event.clone(), rx_post, self.user.user_id);
+        }
+
+        // start command loop
         loop {
             match tokio::time::timeout(Duration::from_millis(500), self.rx_command.recv()).await {
                 Err(_) => {
@@ -162,8 +174,12 @@ impl MigchatClient {
                         Command::Invite(_invitation) => {
                             error!("inviting others is not implemented yet");
                         }
-                        Command::Post(_post) => {
-                            error!("sendibng posts is not omplementing yet");
+                        Command::Post(mut post) => {
+                            post.user_id = self.user.user_id;
+                            if let Err(e) = tx_post.send(post).await {
+                                error!("failed to transfer post to streaming: {}", e);
+                                break;
+                            }
                         }
                         Command::Exit => {
                             error!("exitting chat room is not implemented yet");
@@ -250,6 +266,61 @@ impl MigchatClient {
                 warn!("no more invitations: {}", e);
             }
         }
+    }
+
+    fn launch_chating(
+        client: ChatRoomServiceClient<Channel>,
+        tx_event: mpsc::Sender<Event>,
+        rx_post: mpsc::Receiver<Post>,
+        user_id: u64,
+    ) {
+        let initial_post = Post {
+            user_id,
+            chat_id: u32::MAX,
+            text: String::new(),
+            attachments: Vec::new(),
+        };
+        // create outgoing stream
+        let (tx, rx) = mpsc::channel(4);
+        tokio::spawn(async move {
+            if let Err(e) = tx.send(initial_post).await {
+                error!("failed streaming initial post: {}", e);
+            } else {
+                let mut rx_post = rx_post;
+                while let Some(post) = rx_post.recv().await {
+                    if let Err(e) = tx.send(post).await {
+                        error!("failed to transfer post to UI: {}", e);
+                        break;
+                    }
+                }
+            }
+            debug!("stop streaming outgoing posts");
+        });
+        // create incoming stream
+        tokio::spawn(async move {
+            let mut client = client;
+            let request =
+                tonic::Request::new(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)));
+            match client.start_chating(request).await {
+                Ok(response) => {
+                    let mut stream = response.into_inner();
+                    while let Some(post) = stream.message().await.ok().flatten() {
+                        debug!("new post: {:?}", &post);
+                        if let Err(e) = tx_event
+                            .send(Event::Client(ChatRoomEvent::NewPost(post)))
+                            .await
+                        {
+                            error!("failed to transfer post to UI {}", e);
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("no more posts: {}", e);
+                }
+            }
+            debug!("stop receiving incoming posts");
+        });
     }
 
     async fn read_chats_stream(

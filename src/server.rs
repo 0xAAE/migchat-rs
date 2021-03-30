@@ -168,6 +168,7 @@ impl ChatRoomService for ChatRoomImpl {
         // launch stream source
         let (tx, rx) = mpsc::channel(4);
         tokio::spawn(async move {
+            debug!("start streaming invitations to {}", user_id);
             let mut notifier = notifier;
             while let Some(invitation) = notifier.recv().await {
                 if let Err(e) = tx.send(Ok(invitation)).await {
@@ -175,7 +176,7 @@ impl ChatRoomService for ChatRoomImpl {
                     break;
                 }
             }
-            debug!("stop streaming invitations to user-{}", user_id);
+            debug!("stop streaming invitations to {}", user_id);
         });
         Ok(Response::new(Box::pin(
             tokio_stream::wrappers::ReceiverStream::new(rx),
@@ -203,6 +204,11 @@ impl ChatRoomService for ChatRoomImpl {
             let _ = listeners.remove(&user_id);
         } else {
             error!("failed locking invitations listeners (logout)");
+        }
+        if let Ok(mut listeners) = self.posts_listeners.write() {
+            let _ = listeners.remove(&user_id);
+        } else {
+            error!("failed locking posts listeners (logout)");
         }
         if let Ok(mut users) = self.users.write() {
             let _ = users.remove(&user_id);
@@ -238,13 +244,14 @@ impl ChatRoomService for ChatRoomImpl {
         // launch incoming posts reading
         let (tx_incoming, mut rx_incoming) = mpsc::channel(16);
         tokio::spawn(async move {
+            debug!("start reading incoming posts from {}", user_id);
             while let Some(post) = incoming_stream.message().await.ok().flatten() {
                 if let Err(e) = tx_incoming.send(post).await {
                     error!("failed broadcasting incoming post: {}", e);
                     break;
                 }
             }
-            debug!("stop reading incoming posts");
+            debug!("stop reading incoming posts from {}", user_id);
         });
         // add listener of outgoing posts
         let (listener, notifier) = mpsc::channel::<Arc<Post>>(4);
@@ -256,6 +263,7 @@ impl ChatRoomService for ChatRoomImpl {
         // launch outgoing post streaming
         let (tx_outgoing, rx_outgoing) = mpsc::channel::<Result<Post, _>>(16);
         tokio::spawn(async move {
+            debug!("start streaming outgoing posts to {}", user_id);
             let mut notifier = notifier;
             while let Some(post) = notifier.recv().await {
                 if let Err(e) = tx_outgoing.send(Ok((*post).clone())).await {
@@ -263,7 +271,7 @@ impl ChatRoomService for ChatRoomImpl {
                     break;
                 }
             }
-            debug!("stop streaming outgoing posts");
+            debug!("stop streaming outgoing posts to {}", user_id);
         });
         // launch incoming posts "broadcasting"
         while let Some(post) = rx_incoming.recv().await {
@@ -306,6 +314,7 @@ impl ChatRoomService for ChatRoomImpl {
         // start permanent listener that streams data to remote client
         let (tx, rx) = mpsc::channel(4);
         tokio::spawn(async move {
+            debug!("start streaming users to {}", user_id);
             if !existing.is_empty() {
                 // send existing users
                 let start_update = UpdateUsers {
@@ -313,7 +322,7 @@ impl ChatRoomService for ChatRoomImpl {
                     gone: Vec::new(),
                 };
                 debug!(
-                    "sending {} existing users to user-{}",
+                    "sending {} existing users to {}",
                     start_update.added.len(),
                     user_id
                 );
@@ -324,7 +333,7 @@ impl ChatRoomService for ChatRoomImpl {
             // re-translate new users
             let mut notifier = notifier;
             while let Some(user) = notifier.recv().await {
-                debug!("re-translating new user to user-{}", user_id);
+                debug!("re-translating new user to {}", user_id);
                 let update = UpdateUsers {
                     added: vec![user.deref().clone()],
                     gone: Vec::new(),
@@ -334,7 +343,7 @@ impl ChatRoomService for ChatRoomImpl {
                     break;
                 }
             }
-            debug!("stop streaming users to user-{}", user_id);
+            debug!("stop streaming users to {}", user_id);
         });
         // start streaming activity, data consumer
         Ok(Response::new(Box::pin(
@@ -372,6 +381,7 @@ impl ChatRoomService for ChatRoomImpl {
         // start permanent listener that streams data to remote client
         let (tx, rx) = mpsc::channel(4);
         tokio::spawn(async move {
+            debug!("start streaming chats to {}", user_id);
             if !existing.is_empty() {
                 // send existing chats
                 let start_update = UpdateChats {
@@ -379,7 +389,7 @@ impl ChatRoomService for ChatRoomImpl {
                     gone: Vec::new(),
                 };
                 debug!(
-                    "sending {} existing chats to user-{}",
+                    "sending {} existing chats to {}",
                     start_update.added.len(),
                     user_id
                 );
@@ -390,7 +400,7 @@ impl ChatRoomService for ChatRoomImpl {
             // re-translate new chats
             let mut notifier = notifier;
             while let Some(chat) = notifier.recv().await {
-                debug!("re-translating new chat to user-{}", user_id);
+                debug!("re-translating new chat to {}", user_id);
                 let update = UpdateChats {
                     added: vec![(*chat).clone()],
                     gone: Vec::new(),
@@ -400,7 +410,7 @@ impl ChatRoomService for ChatRoomImpl {
                     break;
                 }
             }
-            debug!("stop streaming chats to user-{}", user_id);
+            debug!("stop streaming chats to {}", user_id);
         });
         // start streaming activity, data consumer
         Ok(Response::new(Box::pin(
@@ -458,7 +468,7 @@ impl ChatRoomService for ChatRoomImpl {
         if let Ok(users) = self.users.read() {
             if !users.contains_key(&invitation.to_user_id) {
                 return Err(tonic::Status::not_found(format!(
-                    "user-{} is not registered",
+                    "{} is not registered",
                     invitation.to_user_id
                 )));
             }
@@ -471,7 +481,7 @@ impl ChatRoomService for ChatRoomImpl {
                 tx.clone()
             } else {
                 return Err(tonic::Status::not_found(format!(
-                    "user-{} did not subscribe to invitations",
+                    "{} did not subscribe to invitations",
                     invitation.to_user_id
                 )));
             }

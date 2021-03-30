@@ -195,7 +195,7 @@ impl App {
                         InputResult::NewChat => {
                             if let Err(e) = self.tx_command.blocking_send(Command::CreateChat(
                                 proto::ChatInfo {
-                                    user_id: 0, // will be set bby service
+                                    user_id: 0, // will be set by service
                                     permanent: true,
                                     auto_enter: true,
                                     description: input.text.clone(),
@@ -206,10 +206,21 @@ impl App {
                             }
                         }
                         InputResult::NewPost => {
-                            error!(
-                                "failed creating post '{}': no channel to gRPC client",
-                                &input.text
-                            );
+                            if let Some(selected) = self.chats_state.selected() {
+                                if let Some(chat) = self.chats.values().nth(selected) {
+                                    let chat_id = chat.chat_id;
+                                    if let Err(e) =
+                                        self.tx_command.blocking_send(Command::Post(proto::Post {
+                                            user_id: 0, // will be set by service
+                                            chat_id,
+                                            text: input.text.clone(),
+                                            attachments: Vec::new(),
+                                        }))
+                                    {
+                                        error!("failed creating post: {}", e);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
