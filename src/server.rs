@@ -19,9 +19,8 @@ mod proto;
 
 use proto::chat_room_service_server::{ChatRoomService, ChatRoomServiceServer};
 use proto::{
-    Chat, ChatInfo, ChatReference, Invitation, Post, Registration, RequestChats,
-    RequestInvitations, RequestUsers, Result as RpcResult, UpdateChats, UpdateUsers, User,
-    UserInfo,
+    Chat, ChatInfo, ChatReference, Invitation, Post, Registration, Result as RpcResult,
+    UpdateChats, UpdateUsers, User, UserInfo,
 };
 //use user::User;
 
@@ -41,6 +40,8 @@ pub struct ChatRoomImpl {
     invitations_listeners: RwLock<HashMap<u64, mpsc::Sender<Invitation>>>,
     // new chats:
     chats_listeners: RwLock<HashMap<u64, mpsc::Sender<Arc<Chat>>>>,
+    // new posts
+    posts_listeners: RwLock<HashMap<u64, mpsc::Sender<Arc<Post>>>>,
 }
 
 impl ChatRoomImpl {
@@ -87,6 +88,42 @@ impl ChatRoomImpl {
     async fn notify_user_gone(&self, _user_id: u64) {
         //todo: implement sending gone info through listeners (enum?)
     }
+
+    async fn notify_new_post(&self, post: Post) {
+        // найти чат по id, запомнить список user_id-получателей - всех участников, кроме автора поста
+        let mut users = Vec::new();
+        if let Ok(chats) = self.chats.read() {
+            if let Some(chat) = chats.get(&post.chat_id) {
+                for u in chat.users.as_slice() {
+                    if *u != post.user_id {
+                        users.push(*u);
+                    }
+                }
+            }
+        }
+        if users.is_empty() {
+            return;
+        }
+        // создать список каналов к получателям поста из списка получателей
+        let mut send_list = Vec::new();
+        if let Ok(listeners) = self.posts_listeners.read() {
+            for user_id in users {
+                if let Some(listener) = listeners.get(&user_id) {
+                    send_list.push(listener.clone());
+                }
+            }
+        }
+        // подготовит пост и разослать
+        if !send_list.is_empty() {
+            let send_post = Arc::new(post);
+            for tx in send_list {
+                if let Err(e) = tx.send(send_post.clone()).await {
+                    error!("failed to send post: {}", e);
+                    //no break;
+                }
+            }
+        }
+    }
 }
 
 #[tonic::async_trait]
@@ -117,24 +154,26 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = " Asks for invitations"]
     async fn get_invitations(
         &self,
-        request: tonic::Request<RequestInvitations>,
+        request: tonic::Request<Registration>,
     ) -> Result<tonic::Response<Self::GetInvitationsStream>, tonic::Status> {
         // get source channel of invitations
         debug!("get_invitations(): {:?}", &request);
         let user_id = request.into_inner().user_id;
-        let rx_invit = if let Ok(mut locked) = self.invitations_listeners.write() {
-            let (tx_invit, rx_invit) = mpsc::channel(4);
-            locked.insert(user_id, tx_invit);
-            rx_invit
+        let (listener, notifier) = mpsc::channel(4);
+        if let Ok(mut listeners) = self.invitations_listeners.write() {
+            listeners.insert(user_id, listener);
         } else {
             return Err(tonic::Status::internal("no access to invitation channel"));
         };
         // launch stream source
         let (tx, rx) = mpsc::channel(4);
         tokio::spawn(async move {
-            let mut rx_invit = rx_invit;
-            while let Some(invitation) = rx_invit.recv().await {
-                tx.send(Ok(invitation)).await.unwrap();
+            let mut notifier = notifier;
+            while let Some(invitation) = notifier.recv().await {
+                if let Err(e) = tx.send(Ok(invitation)).await {
+                    error!("failed streaming invoitations: {}", e);
+                    break;
+                }
             }
             debug!("stop streaming invitations to user-{}", user_id);
         });
@@ -187,9 +226,53 @@ impl ChatRoomService for ChatRoomImpl {
         request: tonic::Request<tonic::Streaming<Post>>,
     ) -> Result<tonic::Response<Self::StartChatingStream>, tonic::Status> {
         debug!("start_chating(): {:?}", &request);
-        Err(tonic::Status::unimplemented(
-            "start_chating() is not implemented yet",
-        ))
+        let mut incoming_stream = request.into_inner();
+        // get initial info
+        let user_id = if let Some(initial_post) = incoming_stream.message().await.ok().flatten() {
+            initial_post.user_id
+        } else {
+            return Err(tonic::Status::cancelled(
+                "initial post with user_id must has been sent",
+            ));
+        };
+        // launch incoming posts reading
+        let (tx_incoming, mut rx_incoming) = mpsc::channel(16);
+        tokio::spawn(async move {
+            while let Some(post) = incoming_stream.message().await.ok().flatten() {
+                if let Err(e) = tx_incoming.send(post).await {
+                    error!("failed broadcasting incoming post: {}", e);
+                    break;
+                }
+            }
+            debug!("stop reading incoming posts");
+        });
+        // add listener of outgoing posts
+        let (listener, notifier) = mpsc::channel::<Arc<Post>>(4);
+        if let Ok(mut listeners) = self.posts_listeners.write() {
+            listeners.insert(user_id, listener);
+        } else {
+            return Err(tonic::Status::internal("no access to post listeners"));
+        }
+        // launch outgoing post streaming
+        let (tx_outgoing, rx_outgoing) = mpsc::channel::<Result<Post, _>>(16);
+        tokio::spawn(async move {
+            let mut notifier = notifier;
+            while let Some(post) = notifier.recv().await {
+                if let Err(e) = tx_outgoing.send(Ok((*post).clone())).await {
+                    error!("failed send outgoing post: {}", e);
+                    break;
+                }
+            }
+            debug!("stop streaming outgoing posts");
+        });
+        // launch incoming posts "broadcasting"
+        while let Some(post) = rx_incoming.recv().await {
+            self.notify_new_post(post).await;
+        }
+
+        Ok(Response::new(Box::pin(
+            tokio_stream::wrappers::ReceiverStream::new(rx_outgoing),
+        )))
     }
 
     #[doc = "Server streaming response type for the GetUsers method."]
@@ -199,13 +282,13 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = " Asks for contacts list"]
     async fn get_users(
         &self,
-        request: tonic::Request<RequestUsers>,
+        request: tonic::Request<Registration>,
     ) -> Result<tonic::Response<Self::GetUsersStream>, tonic::Status> {
         debug!("get_users(): {:?}", &request);
         let user_id = request.into_inner().user_id;
         let (listener, notifier) = mpsc::channel::<Arc<User>>(4);
         if let Ok(mut listeners) = self.users_listeners.write() {
-            listeners.insert(user_id, listener.clone());
+            listeners.insert(user_id, listener);
         } else {
             return Err(tonic::Status::internal("no access to users listeners"));
         }
@@ -266,13 +349,13 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = " Asks for chats list"]
     async fn get_chats(
         &self,
-        request: tonic::Request<RequestChats>,
+        request: tonic::Request<Registration>,
     ) -> Result<tonic::Response<Self::GetChatsStream>, tonic::Status> {
         debug!("get_chats(): {:?}", &request);
         let user_id = request.into_inner().user_id;
         let (listener, notifier) = mpsc::channel::<Arc<Chat>>(4);
         if let Ok(mut listeners) = self.chats_listeners.write() {
-            listeners.insert(user_id, listener.clone());
+            listeners.insert(user_id, listener);
         } else {
             // failed locking listeners
             return Err(tonic::Status::internal("no access to chat listeners"));

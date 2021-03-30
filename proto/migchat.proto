@@ -15,12 +15,12 @@ service ChatRoomService {
   // Sends a logout request using the first invitation from the server
   rpc Logout (Registration) returns (Result) {}
   // Asks for invitations
-  rpc GetInvitations(RequestInvitations) returns (stream Invitation) {}
+  rpc GetInvitations(Registration) returns (stream Invitation) {}
   // Asks for contacts list
-  rpc GetUsers(RequestUsers) returns (stream UpdateUsers) {}
+  rpc GetUsers(Registration) returns (stream UpdateUsers) {}
   // Asks for chats list
-  rpc GetChats(RequestChats) returns (stream UpdateChats) {}
-  // Starts chating
+  rpc GetChats(Registration) returns (stream UpdateChats) {}
+  // Starts chating, client must send initial Post { ..., user_id, ...} a.s.a.p.
   rpc StartChating(stream Post) returns (stream Post) {}
 
   // Creates new chat
@@ -42,15 +42,6 @@ message Registration {
     uint64 user_id = 1;
 }
 
-message RequestInvitations {
-    uint64 user_id = 1;
-}
-
-message RequestUsers {
-    uint64 user_id = 1;
-    bool filter_alive = 2;
-}
-
 message UpdateUsers {
     repeated User added = 1;
     repeated User gone = 2;
@@ -60,11 +51,6 @@ message User {
     uint64 user_id = 1;
     string name = 2;
     string short_name = 3;
-}
-
-message RequestChats {
-    uint64 user_id = 1;
-    bool filter_alive = 2;
 }
 
 message UpdateChats {
@@ -118,8 +104,8 @@ message Attachment {
 }
 
 message Post {
-    uint32 chat_id = 1;
-    uint64 user_id = 2;
+    uint64 user_id = 1;
+    uint32 chat_id = 2;
     string text = 3;
     repeated Attachment attachments = 4;
 }

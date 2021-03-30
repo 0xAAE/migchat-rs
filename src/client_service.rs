@@ -1,8 +1,5 @@
 use crate::proto::chat_room_service_client::ChatRoomServiceClient;
-use crate::proto::{
-    Chat, ChatInfo, Invitation, Post, RequestChats, RequestInvitations, RequestUsers, User,
-    UserInfo,
-};
+use crate::proto::{Chat, ChatInfo, Invitation, Post, Registration, User, UserInfo};
 use crate::Event;
 
 use config::Config;
@@ -191,10 +188,7 @@ impl MigchatClient {
     ) {
         let mut client = client;
         match client
-            .get_users(tonic::Request::new(RequestUsers {
-                user_id,
-                filter_alive: true,
-            }))
+            .get_users(tonic::Request::new(Registration { user_id }))
             .await
         {
             Ok(response) => {
@@ -237,7 +231,7 @@ impl MigchatClient {
     ) {
         let mut client = client;
         match client
-            .get_invitations(tonic::Request::new(RequestInvitations { user_id }))
+            .get_invitations(tonic::Request::new(Registration { user_id }))
             .await
         {
             Ok(response) => {
@@ -265,10 +259,7 @@ impl MigchatClient {
     ) {
         let mut client = client;
         match client
-            .get_chats(tonic::Request::new(RequestChats {
-                user_id,
-                filter_alive: true,
-            }))
+            .get_chats(tonic::Request::new(Registration { user_id }))
             .await
         {
             Ok(response) => {
