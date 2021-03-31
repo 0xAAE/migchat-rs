@@ -1,5 +1,5 @@
 use crate::proto::chat_room_service_client::ChatRoomServiceClient;
-use crate::proto::{Chat, ChatInfo, Invitation, Post, Registration, User, UserInfo};
+use crate::proto::{Chat, ChatInfo, ChatReference, Invitation, Post, Registration, User, UserInfo};
 use crate::Event;
 
 use config::Config;
@@ -27,6 +27,7 @@ pub enum ChatRoomEvent {
 pub enum Command {
     CreateChat(ChatInfo), // create new chat
     Invite(Invitation),   // invite user to chat
+    EnterChat(u32),       // enter chat specified
     Post(Post),           // send new post
     Exit,                 // exit chat room
 }
@@ -173,12 +174,33 @@ impl MigchatClient {
                                 }
                             }
                         }
-                        Command::Invite(_invitation) => {
-                            error!("inviting others is not implemented yet");
-                        }
+                        Command::Invite(invitation) => match client.invite_user(invitation).await {
+                            Ok(response) => {
+                                debug!("invite user: {:?}", response.into_inner());
+                            }
+                            Err(e) => {
+                                warn!("failed to invite user: {}", e);
+                            }
+                        },
                         Command::Post(post) => {
                             assert_eq!(post.user_id, self.user.user_id);
                             match client.create_post(post).await {
+                                Ok(response) => {
+                                    debug!("send post: {:?}", response.into_inner());
+                                }
+                                Err(e) => {
+                                    warn!("failed to create chat: {}", e);
+                                }
+                            }
+                        }
+                        Command::EnterChat(chat_id) => {
+                            match client
+                                .enter_chat(ChatReference {
+                                    user_id: self.user.user_id,
+                                    chat_id,
+                                })
+                                .await
+                            {
                                 Ok(response) => {
                                     debug!("send post: {:?}", response.into_inner());
                                 }

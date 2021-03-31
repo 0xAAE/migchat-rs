@@ -1,6 +1,6 @@
 use crate::proto;
 use crate::Command;
-use log::error;
+use log::{error, warn};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tui::widgets::ListState;
@@ -321,6 +321,24 @@ impl App {
                             // setup input mode:
                             self.input = Some(InputMode::new_post());
                         }
+                        Widget::Users => {
+                            if let Some(user) = self.get_sel_user() {
+                                if let Some(chat) = self.get_sel_chat() {
+                                    if let Err(e) = self.tx_command.blocking_send(Command::Invite(
+                                        proto::Invitation {
+                                            chat_id: chat.chat_id,
+                                            from_user_id: self.user.user_id,
+                                            to_user_id: user.user_id,
+                                        },
+                                    )) {
+                                        error!(
+                                            "failed inviting {} to {}: {}",
+                                            user.short_name, chat.description, e
+                                        );
+                                    }
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -461,10 +479,23 @@ impl App {
 
     pub fn on_get_invited(&mut self, invitation: proto::Invitation) {
         //todo: ask user about invitation
-        error!(
-            "handling invitations is not implemented yet, drop: {:?}",
-            &invitation
-        );
+        if let Some(chat) = self.get_chat(invitation.chat_id) {
+            if chat
+                .users
+                .iter()
+                .find(|&u| *u == self.user.user_id)
+                .is_some()
+            {
+                warn!("got invitation while being in that chat");
+            }
+        }
+        // auto enter chat
+        if let Err(e) = self
+            .tx_command
+            .blocking_send(Command::EnterChat(invitation.chat_id))
+        {
+            error!("failed creating post: {}", e);
+        }
     }
 
     pub fn on_new_post(&mut self, post: proto::Post) {
