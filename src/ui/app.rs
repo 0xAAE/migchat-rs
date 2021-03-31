@@ -1,5 +1,5 @@
 use crate::proto;
-use crate::Command;
+use crate::{Command, Event};
 use log::{error, warn};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -10,7 +10,7 @@ use tui_logger::{TuiWidgetEvent, TuiWidgetState};
 // pub type SharedUsers = Arc<Mutex<Vec<proto::User>>>;
 // pub type SharedPosts = Arc<Mutex<Vec<proto::Post>>>;
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy, Debug)]
 pub enum Widget {
     App,
     Users,
@@ -70,6 +70,7 @@ pub struct App {
     pub extended_log: bool,
 
     tx_command: mpsc::Sender<Command>,
+    tx_event: mpsc::Sender<Event>,
     focused: Widget,
     modal: Widget,
     pub input: Option<InputMode>,
@@ -79,6 +80,7 @@ impl App {
     pub fn new(
         user: proto::UserInfo,
         tx_command: mpsc::Sender<Command>,
+        tx_event: mpsc::Sender<Event>,
         extended_log: bool,
     ) -> Self {
         App {
@@ -98,6 +100,7 @@ impl App {
             },
             extended_log,
             tx_command,
+            tx_event,
             focused: Widget::Chats,
             modal: Widget::App,
             input: None,
@@ -115,82 +118,65 @@ impl App {
     }
 
     pub fn on_up(&mut self) {
-        if !self.test_prev(true) {
-            // pass event into modal
-            match self.modal {
-                Widget::Log => {
-                    self.logger_state.transition(&TuiWidgetEvent::UpKey);
-                }
-                Widget::Chats => {
-                    App::list_previous(&mut self.chats_state, self.chats.len());
-                }
-                Widget::Users => {
-                    App::list_previous(&mut self.users_state, self.users.len());
-                }
-                Widget::Posts => {
-                    App::list_previous(&mut self.posts_state, self.posts.len());
-                }
-                _ => {}
+        match self.modal {
+            Widget::Log => {
+                self.logger_state.transition(&TuiWidgetEvent::UpKey);
             }
+            Widget::App => match self.focused {
+                Widget::Users => App::list_previous(&mut self.users_state, self.users.len()),
+                Widget::Chats => App::list_previous(&mut self.chats_state, self.chats.len()),
+                Widget::Posts => App::list_previous(&mut self.posts_state, self.posts.len()),
+                _ => {}
+            },
+            _ => {}
         }
     }
 
     pub fn on_down(&mut self) {
-        if !self.test_next(true) {
-            // pass event into modal
-            match self.modal {
-                Widget::Log => {
-                    self.logger_state.transition(&TuiWidgetEvent::DownKey);
-                }
-                Widget::Chats => {
-                    App::list_next(&mut self.chats_state, self.chats.len());
-                }
-                Widget::Users => {
-                    App::list_next(&mut self.users_state, self.users.len());
-                }
-                Widget::Posts => {
-                    App::list_next(&mut self.posts_state, self.posts.len());
-                }
-                _ => {}
+        match self.modal {
+            Widget::Log => {
+                self.logger_state.transition(&TuiWidgetEvent::DownKey);
             }
+            Widget::App => match self.focused {
+                Widget::Chats => App::list_next(&mut self.chats_state, self.chats.len()),
+                Widget::Users => App::list_next(&mut self.users_state, self.users.len()),
+                Widget::Posts => App::list_next(&mut self.posts_state, self.posts.len()),
+                _ => {}
+            },
+            _ => {}
         }
     }
 
     pub fn on_right(&mut self) {
-        if !self.test_next(false) {
-            // pass event into focused
-            match self.modal {
-                Widget::Log => {
-                    self.logger_state.transition(&TuiWidgetEvent::RightKey);
-                }
-                Widget::Input => {
-                    error!("failed passing --> to input");
-                }
-                _ => {}
+        match self.modal {
+            Widget::Log => {
+                self.logger_state.transition(&TuiWidgetEvent::RightKey);
             }
+            Widget::App => match self.focused {
+                Widget::Users => self.focused = Widget::Chats,
+                Widget::Chats => self.focused = Widget::Posts,
+                _ => {}
+            },
+            _ => {}
         }
     }
 
     pub fn on_left(&mut self) {
-        if !self.test_prev(false) {
-            // pass event into focused
-            match self.modal {
-                Widget::Log => {
-                    self.logger_state.transition(&TuiWidgetEvent::LeftKey);
-                }
-                Widget::Input => {
-                    error!("failed passing <-- to input");
-                }
-                _ => {}
+        match self.modal {
+            Widget::Log => {
+                self.logger_state.transition(&TuiWidgetEvent::LeftKey);
             }
+            Widget::App => match self.focused {
+                Widget::Chats => self.focused = Widget::Users,
+                Widget::Posts => self.focused = Widget::Chats,
+                _ => {}
+            },
+            _ => {}
         }
     }
 
     pub fn on_enter(&mut self) {
         match self.modal {
-            Widget::App => {
-                self.modal = self.focused;
-            }
             Widget::Log => {
                 self.logger_state.transition(&TuiWidgetEvent::FocusKey);
             }
@@ -234,11 +220,120 @@ impl App {
                 }
                 self.input = None;
                 // restore previous modal widget:
-                self.modal = self.focused;
+                self.modal = Widget::App;
             }
             _ => {}
         };
     }
+
+    pub fn on_esc(&mut self) {
+        match self.modal {
+            Widget::Input => self.modal = Widget::App,
+            Widget::App => {}
+            _ => {
+                error!("widget {:?} must not be modal", self.modal);
+                self.modal = Widget::App;
+            }
+        }
+    }
+
+    pub fn on_key(&mut self, c: char, ctrl: bool, alt: bool) {
+        // exit in any modal widget
+        if ctrl && c == 'q' {
+            if let Err(e) = self.tx_event.blocking_send(Event::Exit) {
+                error!("failed sending Exit command: {}", e);
+            }
+            return;
+        }
+        if self.modal == Widget::Input {
+            if let Some(input) = self.input.as_mut() {
+                input.text.push(c);
+            } else {
+                error!("input mode is not init properly");
+            }
+        } else {
+            match c {
+                ' ' => {
+                    if self.modal == Widget::Log {
+                        self.logger_state.transition(&TuiWidgetEvent::SpaceKey);
+                    }
+                }
+                '-' => {
+                    if self.modal == Widget::Log {
+                        self.logger_state.transition(&TuiWidgetEvent::MinusKey);
+                    }
+                }
+                '+' => {
+                    if self.modal == Widget::Log {
+                        self.logger_state.transition(&TuiWidgetEvent::PlusKey);
+                    }
+                }
+                'n' => {
+                    if ctrl {
+                        // create new item
+                        match self.focused {
+                            Widget::Chats => {
+                                self.focused = Widget::Chats;
+                                self.modal = Widget::Input;
+                                // setup input mode:
+                                self.input = Some(InputMode::new_chat());
+                            }
+                            Widget::Posts => {
+                                self.focused = Widget::Posts;
+                                self.modal = Widget::Input;
+                                // setup input mode:
+                                self.input = Some(InputMode::new_post());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                'i' => {
+                    if alt {
+                        match self.focused {
+                            Widget::Users => {
+                                // invite selected user into selected chat
+                                if let Some(user) = self.get_sel_user() {
+                                    if let Some(chat) = self.get_sel_chat() {
+                                        if let Err(e) = self.tx_command.blocking_send(
+                                            Command::Invite(proto::Invitation {
+                                                chat_id: chat.chat_id,
+                                                from_user_id: self.user.user_id,
+                                                to_user_id: user.user_id,
+                                            }),
+                                        ) {
+                                            error!(
+                                                "failed inviting {} to {}: {}",
+                                                user.short_name, chat.description, e
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            // Widget::Chats => {
+                            //     // enter (invite yourself) into selected chat
+                            //     if let Some(chat) = self.get_sel_chat() {
+
+                            //     }
+                            // }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub fn on_backspace(&mut self) {
+        if let Some(input) = self.input.as_mut() {
+            if !input.text.is_empty() {
+                input.text.pop();
+            }
+        }
+    }
+
+    pub fn on_tick(&mut self) {}
 
     pub fn get_sel_chat(&self) -> Option<&proto::Chat> {
         self.chats_state
@@ -261,171 +356,6 @@ impl App {
             Some(&self.user)
         } else {
             self.users.iter().find(|u| u.user_id == user_id)
-        }
-    }
-
-    pub fn test_exit(&mut self) -> bool {
-        match self.modal {
-            Widget::Input => {
-                self.modal = self.focused;
-                self.input = None;
-                false
-            }
-            Widget::App => true,
-            _ => {
-                self.modal = Widget::App;
-                false
-            }
-        }
-    }
-
-    pub fn on_key(&mut self, c: char) {
-        if self.modal == Widget::Input {
-            if let Some(input) = self.input.as_mut() {
-                input.text.push(c);
-            } else {
-                error!("input mode is not init properly");
-            }
-        } else {
-            match c {
-                'q' => {
-                    let _ = self.test_exit();
-                }
-                ' ' => {
-                    if self.modal == Widget::Log {
-                        self.logger_state.transition(&TuiWidgetEvent::SpaceKey);
-                    }
-                }
-                '-' => {
-                    if self.modal == Widget::Log {
-                        self.logger_state.transition(&TuiWidgetEvent::MinusKey);
-                    }
-                }
-                '+' => {
-                    if self.modal == Widget::Log {
-                        self.logger_state.transition(&TuiWidgetEvent::PlusKey);
-                    }
-                }
-                'n' => {
-                    // create new item
-                    match self.modal {
-                        Widget::Chats => {
-                            self.focused = Widget::Chats;
-                            self.modal = Widget::Input;
-                            // setup input mode:
-                            self.input = Some(InputMode::new_chat());
-                        }
-                        Widget::Posts => {
-                            self.focused = Widget::Posts;
-                            self.modal = Widget::Input;
-                            // setup input mode:
-                            self.input = Some(InputMode::new_post());
-                        }
-                        Widget::Users => {
-                            if let Some(user) = self.get_sel_user() {
-                                if let Some(chat) = self.get_sel_chat() {
-                                    if let Err(e) = self.tx_command.blocking_send(Command::Invite(
-                                        proto::Invitation {
-                                            chat_id: chat.chat_id,
-                                            from_user_id: self.user.user_id,
-                                            to_user_id: user.user_id,
-                                        },
-                                    )) {
-                                        error!(
-                                            "failed inviting {} to {}: {}",
-                                            user.short_name, chat.description, e
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    pub fn on_backspace(&mut self) {
-        if let Some(input) = self.input.as_mut() {
-            if !input.text.is_empty() {
-                input.text.pop();
-            }
-        }
-    }
-
-    pub fn on_tick(&mut self) {}
-
-    // true if focus changed
-    fn test_next(&mut self, vert: bool) -> bool {
-        match self.modal {
-            Widget::App => {
-                let stored = self.focused;
-                self.focused = match self.focused {
-                    Widget::Chats => {
-                        if vert {
-                            Widget::Log
-                        } else {
-                            Widget::Posts
-                        }
-                    }
-                    Widget::Posts => {
-                        if vert {
-                            Widget::Log
-                        } else {
-                            self.focused
-                        }
-                    }
-                    Widget::Users => {
-                        if vert {
-                            Widget::Log
-                        } else {
-                            Widget::Chats
-                        }
-                    }
-                    Widget::App => Widget::Log,
-                    _ => self.focused,
-                };
-                stored != self.focused
-            }
-            _ => false,
-        }
-    }
-
-    // true if focus changed
-    fn test_prev(&mut self, vert: bool) -> bool {
-        match self.modal {
-            Widget::App => {
-                let stored = self.focused;
-                self.focused = match self.focused {
-                    Widget::Chats => {
-                        if vert {
-                            self.focused
-                        } else {
-                            Widget::Users
-                        }
-                    }
-                    Widget::Posts => {
-                        if vert {
-                            self.focused
-                        } else {
-                            Widget::Chats
-                        }
-                    }
-                    Widget::Log => {
-                        if vert {
-                            Widget::Chats
-                        } else {
-                            self.focused
-                        }
-                    }
-                    Widget::App => Widget::Chats,
-                    _ => self.focused,
-                };
-                stored != self.focused
-            }
-            _ => false,
         }
     }
 

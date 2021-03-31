@@ -2,7 +2,10 @@
 use clap::{App, Arg};
 use config::{Config, Environment, File};
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event as CEvent, KeyCode, KeyEvent},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event as CEvent, KeyCode, KeyEvent,
+        KeyModifiers,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -37,6 +40,8 @@ pub enum Event {
     Tick,
     // gRPC client events
     Client(ChatRoomEvent),
+    // exit reqired
+    Exit,
 }
 
 #[tokio::main]
@@ -129,8 +134,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // launch client
     let mut client = MigchatClient::new(&settings, rx_command);
     let exit_flag_copy = exit_flag.clone();
+    let tx_event_copy = tx_event.clone();
     let chat_service = tokio::spawn(async move {
-        let _ = client.launch(tx_event, exit_flag_copy).await;
+        let _ = client.launch(tx_event_copy, exit_flag_copy).await;
         println!("chat service stopped");
     });
 
@@ -147,7 +153,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let backend = CrosstermBackend::new(stdout);
                 if let Ok(mut terminal) = Terminal::new(backend) {
                     if terminal.clear().is_ok() {
-                        let mut app = ui::App::new(user, tx_command, extended_log);
+                        let mut app = ui::App::new(user, tx_command, tx_event, extended_log);
                         loop {
                             if terminal.draw(|f| ui::draw(f, &mut app)).is_err() {
                                 println!("failed drawing UI");
@@ -156,21 +162,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if let Some(event) = rx_event.blocking_recv() {
                                 match event {
                                     Event::Input(event) => match event.code {
-                                        KeyCode::Esc => {
-                                            if app.test_exit() {
-                                                let _ = disable_raw_mode();
-                                                let _ = execute!(
-                                                    terminal.backend_mut(),
-                                                    LeaveAlternateScreen,
-                                                    DisableMouseCapture
-                                                );
-                                                let _ = terminal.show_cursor();
-                                                exit_flag.store(true, Ordering::SeqCst);
-                                                break;
-                                            }
-                                        }
+                                        KeyCode::Esc => app.on_esc(),
                                         KeyCode::Enter => app.on_enter(),
-                                        KeyCode::Char(c) => app.on_key(c),
+                                        KeyCode::Char(c) => app.on_key(
+                                            c,
+                                            event.modifiers.contains(KeyModifiers::CONTROL),
+                                            event.modifiers.contains(KeyModifiers::ALT),
+                                        ),
                                         KeyCode::Left => app.on_left(),
                                         KeyCode::Up => app.on_up(),
                                         KeyCode::Right => app.on_right(),
@@ -204,12 +202,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             app.on_user_gone(user_id);
                                         }
                                     },
+                                    Event::Exit => {
+                                        exit_flag.store(true, Ordering::SeqCst);
+                                        break;
+                                    }
                                 }
                             } else {
                                 break;
                             }
                         }
                     }
+                    let _ = disable_raw_mode();
+                    let _ = execute!(
+                        terminal.backend_mut(),
+                        LeaveAlternateScreen,
+                        DisableMouseCapture
+                    );
+                    let _ = terminal.show_cursor();
                 }
             }
         }
