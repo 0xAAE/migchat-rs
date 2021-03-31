@@ -95,9 +95,7 @@ impl ChatRoomImpl {
         if let Ok(chats) = self.chats.read() {
             if let Some(chat) = chats.get(&post.chat_id) {
                 for u in chat.users.as_slice() {
-                    if *u != post.user_id {
-                        users.push(*u);
-                    }
+                    users.push(*u);
                 }
             }
         }
@@ -438,8 +436,9 @@ impl ChatRoomService for ChatRoomImpl {
         debug!("create_chat(): {:?}", &request);
         let info = request.get_ref();
         let users = if info.auto_enter {
-            vec![info.user_id]
-            // todo: auto include desired users
+            let mut tmp = vec![info.user_id];
+            tmp.extend_from_slice(info.desired_users.as_slice());
+            tmp
         } else {
             Vec::new()
         };

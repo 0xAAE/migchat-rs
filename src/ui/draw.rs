@@ -38,7 +38,7 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(Span::styled(&app.title, caption_style));
-    let paragraph = Paragraph::new(app.current_user.as_str())
+    let paragraph = Paragraph::new(app.user_description.as_str())
         .block(block)
         .wrap(Wrap { trim: true });
     f.render_widget(paragraph, rows[0]);
@@ -74,7 +74,7 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let chats: Vec<ListItem> = app
         .chats
         .values()
-        .map(|c| ListItem::new(format!("chat #{}", c.chat_id)))
+        .map(|c| ListItem::new(format!("{} ({})", c.description, c.users.len())))
         .collect();
     let chats = List::new(chats)
         .block(Block::default().borders(Borders::ALL).title("Chats"))
@@ -85,7 +85,27 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     //
     // selected chat content
     //
-    let content: Vec<ListItem> = vec![ListItem::new("Select chat to view posts")];
+    let content: Vec<ListItem> = if let Some(chat) = app.get_sel_chat() {
+        app.posts
+            .iter()
+            .filter(|post| post.chat_id == chat.chat_id)
+            .map(|post| {
+                ListItem::new(format!(
+                    "{}: {}",
+                    app.get_user(post.user_id)
+                        .and_then(|u| if u.user_id == app.user.user_id {
+                            Some(String::from("Me"))
+                        } else {
+                            Some(u.short_name.clone())
+                        })
+                        .unwrap_or_else(|| format!("{}", post.user_id)),
+                    post.text
+                ))
+            })
+            .collect()
+    } else {
+        vec![ListItem::new("select chat to view posts")]
+    };
     let content = List::new(content)
         .block(Block::default().borders(Borders::ALL).title("Posts"))
         .style(get_style(app.get_state(Widget::Posts)))

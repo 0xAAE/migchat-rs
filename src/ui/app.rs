@@ -65,7 +65,8 @@ pub struct App {
     pub posts: Vec<proto::Post>,
     pub posts_state: ListState,
     pub logger_state: TuiWidgetState,
-    pub current_user: String,
+    pub user_description: String,
+    pub user: proto::User,
     pub extended_log: bool,
 
     tx_command: mpsc::Sender<Command>,
@@ -89,7 +90,12 @@ impl App {
             posts: Vec::with_capacity(128),
             posts_state: ListState::default(),
             logger_state: TuiWidgetState::new(),
-            current_user: format!("{} ({})", user.name, user.short_name),
+            user_description: format!("{} ({})", user.name, user.short_name),
+            user: proto::User {
+                user_id: 0,
+                name: user.name,
+                short_name: user.short_name,
+            },
             extended_log,
             tx_command,
             focused: Widget::Chats,
@@ -193,32 +199,34 @@ impl App {
                 if let Some(input) = &self.input {
                     match input.purpose {
                         InputResult::NewChat => {
+                            let mut desired_users = Vec::new();
+                            if let Some(user) = self.get_sel_user() {
+                                desired_users.push(user.user_id);
+                            }
                             if let Err(e) = self.tx_command.blocking_send(Command::CreateChat(
                                 proto::ChatInfo {
-                                    user_id: 0, // will be set by service
+                                    user_id: self.user.user_id,
                                     permanent: true,
                                     auto_enter: true,
                                     description: input.text.clone(),
-                                    desired_users: Vec::new(),
+                                    desired_users,
                                 },
                             )) {
                                 error!("failed creating chat: {}", e);
                             }
                         }
                         InputResult::NewPost => {
-                            if let Some(selected) = self.chats_state.selected() {
-                                if let Some(chat) = self.chats.values().nth(selected) {
-                                    let chat_id = chat.chat_id;
-                                    if let Err(e) =
-                                        self.tx_command.blocking_send(Command::Post(proto::Post {
-                                            user_id: 0, // will be set by service
-                                            chat_id,
-                                            text: input.text.clone(),
-                                            attachments: Vec::new(),
-                                        }))
-                                    {
-                                        error!("failed creating post: {}", e);
-                                    }
+                            if let Some(chat) = self.get_sel_chat() {
+                                let chat_id = chat.chat_id;
+                                if let Err(e) =
+                                    self.tx_command.blocking_send(Command::Post(proto::Post {
+                                        user_id: self.user.user_id,
+                                        chat_id,
+                                        text: input.text.clone(),
+                                        attachments: Vec::new(),
+                                    }))
+                                {
+                                    error!("failed creating post: {}", e);
                                 }
                             }
                         }
@@ -230,6 +238,30 @@ impl App {
             }
             _ => {}
         };
+    }
+
+    pub fn get_sel_chat(&self) -> Option<&proto::Chat> {
+        self.chats_state
+            .selected()
+            .and_then(|idx| self.chats.values().nth(idx))
+    }
+
+    pub fn get_chat(&self, chat_id: u32) -> Option<&proto::Chat> {
+        self.chats.get(&chat_id)
+    }
+
+    pub fn get_sel_user(&self) -> Option<&proto::User> {
+        self.users_state
+            .selected()
+            .and_then(|idx| self.users.get(idx))
+    }
+
+    pub fn get_user(&self, user_id: u64) -> Option<&proto::User> {
+        if self.user.user_id == user_id {
+            Some(&self.user)
+        } else {
+            self.users.iter().find(|u| u.user_id == user_id)
+        }
     }
 
     pub fn test_exit(&mut self) -> bool {
@@ -412,6 +444,10 @@ impl App {
     }
 
     // chat events handling
+
+    pub fn on_registered(&mut self, user_id: u64) {
+        self.user.user_id = user_id;
+    }
 
     pub fn on_user_entered(&mut self, user: proto::User) {
         if !self.users.iter().any(|u| u.user_id == user.user_id) {

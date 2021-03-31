@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 use tonic::transport::{Channel, Endpoint};
 
 pub enum ChatRoomEvent {
+    Registered(u64),        // user_id
     UserEntered(User),      // user_id, name, short_name
     UserGone(u64),          // user_id
     ChatUpdated(Chat),      // chat_id
@@ -105,6 +106,12 @@ impl MigchatClient {
         if let Ok(reg_res) = client.register(reg_req).await {
             self.user.user_id = reg_res.into_inner().user_id;
             info!("logged as {:?}", self.user);
+            if let Err(e) = tx_event
+                .send(Event::Client(ChatRoomEvent::Registered(self.user.user_id)))
+                .await
+            {
+                error!("failed to translate own user_id to UI");
+            }
             // launch accepting users in separate task
             let fut = MigchatClient::read_users_stream(
                 client.clone(),
@@ -148,8 +155,8 @@ impl MigchatClient {
                 }
                 Ok(command) => match command {
                     Some(command) => match command {
-                        Command::CreateChat(mut info) => {
-                            info.user_id = self.user.user_id;
+                        Command::CreateChat(info) => {
+                            assert_eq!(info.user_id, self.user.user_id);
                             match client.create_chat(info).await {
                                 Ok(response) => {
                                     if let Err(e) = tx_event
@@ -169,8 +176,8 @@ impl MigchatClient {
                         Command::Invite(_invitation) => {
                             error!("inviting others is not implemented yet");
                         }
-                        Command::Post(mut post) => {
-                            post.user_id = self.user.user_id;
+                        Command::Post(post) => {
+                            assert_eq!(post.user_id, self.user.user_id);
                             match client.create_post(post).await {
                                 Ok(response) => {
                                     debug!("send post: {:?}", response.into_inner());

@@ -182,6 +182,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         app.on_tick();
                                     }
                                     Event::Client(chat_event) => match chat_event {
+                                        ChatRoomEvent::Registered(user_id) => {
+                                            app.on_registered(user_id);
+                                        }
                                         ChatRoomEvent::UserEntered(user) => {
                                             app.on_user_entered(user);
                                         }
