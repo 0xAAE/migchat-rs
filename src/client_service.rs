@@ -220,6 +220,21 @@ impl MigchatClient {
                 },
             }
         }
+
+        match client
+            .logout(Registration {
+                user_id: self.user.user_id,
+            })
+            .await
+        {
+            Ok(response) => {
+                debug!("logout: {:?}", response.into_inner());
+            }
+            Err(e) => {
+                warn!("failed to logout: {}", e);
+            }
+        }
+
         info!("exitting, bye!");
 
         Ok(())
