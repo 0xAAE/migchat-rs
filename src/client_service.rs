@@ -1,5 +1,5 @@
 use crate::proto::chat_room_service_client::ChatRoomServiceClient;
-use crate::proto::{Chat, ChatInfo, Invitation, Post, Registration, User, UserInfo};
+use crate::proto::{Chat, ChatInfo, ChatReference, Invitation, Post, Registration, User, UserInfo};
 use crate::Event;
 
 use config::Config;
@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 use tonic::transport::{Channel, Endpoint};
 
 pub enum ChatRoomEvent {
+    Registered(u64),        // user_id
     UserEntered(User),      // user_id, name, short_name
     UserGone(u64),          // user_id
     ChatUpdated(Chat),      // chat_id
@@ -26,6 +27,7 @@ pub enum ChatRoomEvent {
 pub enum Command {
     CreateChat(ChatInfo), // create new chat
     Invite(Invitation),   // invite user to chat
+    EnterChat(u32),       // enter chat specified
     Post(Post),           // send new post
     Exit,                 // exit chat room
 }
@@ -105,6 +107,12 @@ impl MigchatClient {
         if let Ok(reg_res) = client.register(reg_req).await {
             self.user.user_id = reg_res.into_inner().user_id;
             info!("logged as {:?}", self.user);
+            if let Err(e) = tx_event
+                .send(Event::Client(ChatRoomEvent::Registered(self.user.user_id)))
+                .await
+            {
+                error!("failed to translate own user_id to UI");
+            }
             // launch accepting users in separate task
             let fut = MigchatClient::read_users_stream(
                 client.clone(),
@@ -148,8 +156,8 @@ impl MigchatClient {
                 }
                 Ok(command) => match command {
                     Some(command) => match command {
-                        Command::CreateChat(mut info) => {
-                            info.user_id = self.user.user_id;
+                        Command::CreateChat(info) => {
+                            assert_eq!(info.user_id, self.user.user_id);
                             match client.create_chat(info).await {
                                 Ok(response) => {
                                     if let Err(e) = tx_event
@@ -166,12 +174,33 @@ impl MigchatClient {
                                 }
                             }
                         }
-                        Command::Invite(_invitation) => {
-                            error!("inviting others is not implemented yet");
-                        }
-                        Command::Post(mut post) => {
-                            post.user_id = self.user.user_id;
+                        Command::Invite(invitation) => match client.invite_user(invitation).await {
+                            Ok(response) => {
+                                debug!("invite user: {:?}", response.into_inner());
+                            }
+                            Err(e) => {
+                                warn!("failed to invite user: {}", e);
+                            }
+                        },
+                        Command::Post(post) => {
+                            assert_eq!(post.user_id, self.user.user_id);
                             match client.create_post(post).await {
+                                Ok(response) => {
+                                    debug!("send post: {:?}", response.into_inner());
+                                }
+                                Err(e) => {
+                                    warn!("failed to create chat: {}", e);
+                                }
+                            }
+                        }
+                        Command::EnterChat(chat_id) => {
+                            match client
+                                .enter_chat(ChatReference {
+                                    user_id: self.user.user_id,
+                                    chat_id,
+                                })
+                                .await
+                            {
                                 Ok(response) => {
                                     debug!("send post: {:?}", response.into_inner());
                                 }
@@ -191,6 +220,21 @@ impl MigchatClient {
                 },
             }
         }
+
+        match client
+            .logout(Registration {
+                user_id: self.user.user_id,
+            })
+            .await
+        {
+            Ok(response) => {
+                debug!("logout: {:?}", response.into_inner());
+            }
+            Err(e) => {
+                warn!("failed to logout: {}", e);
+            }
+        }
+
         info!("exitting, bye!");
 
         Ok(())
