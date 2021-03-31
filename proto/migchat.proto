@@ -20,9 +20,11 @@ service ChatRoomService {
   rpc GetUsers(Registration) returns (stream UpdateUsers) {}
   // Asks for chats list
   rpc GetChats(Registration) returns (stream UpdateChats) {}
-  // Starts chating, client must send initial Post { ..., user_id, ...} a.s.a.p.
-  rpc StartChating(stream Post) returns (stream Post) {}
+  // Asks for incoming posts
+  rpc GetPosts(Registration) returns (stream Post) {}
 
+  // Creates new post
+  rpc CreatePost(Post) returns (Result) {}
   // Creates new chat
   rpc CreateChat(ChatInfo) returns (Chat) {}
   // Invites user to chat

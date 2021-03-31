@@ -108,7 +108,9 @@ impl ChatRoomImpl {
         let mut send_list = Vec::new();
         if let Ok(listeners) = self.posts_listeners.read() {
             for user_id in users {
+                debug!("search channel to {} for post", user_id);
                 if let Some(listener) = listeners.get(&user_id) {
+                    debug!("found channel to {} for post", user_id);
                     send_list.push(listener.clone());
                 }
             }
@@ -222,64 +224,60 @@ impl ChatRoomService for ChatRoomImpl {
         }))
     }
 
-    #[doc = "Server streaming response type for the StartChating method."]
-    type StartChatingStream =
+    #[doc = "Server streaming response type for the GetPosts method."]
+    type GetPostsStream =
         Pin<Box<dyn Stream<Item = Result<Post, tonic::Status>> + Send + Sync + 'static>>;
 
-    #[doc = " Starts chating"]
-    async fn start_chating(
+    #[doc = " Asks for incoming posts"]
+    async fn get_posts(
         &self,
-        request: tonic::Request<tonic::Streaming<Post>>,
-    ) -> Result<tonic::Response<Self::StartChatingStream>, tonic::Status> {
-        debug!("start_chating(): {:?}", &request);
-        let mut incoming_stream = request.into_inner();
-        // get initial info
-        let user_id = if let Some(initial_post) = incoming_stream.message().await.ok().flatten() {
-            initial_post.user_id
-        } else {
-            return Err(tonic::Status::cancelled(
-                "initial post with user_id must has been sent",
-            ));
-        };
-        // launch incoming posts reading
-        let (tx_incoming, mut rx_incoming) = mpsc::channel(16);
-        tokio::spawn(async move {
-            debug!("start reading incoming posts from {}", user_id);
-            while let Some(post) = incoming_stream.message().await.ok().flatten() {
-                if let Err(e) = tx_incoming.send(post).await {
-                    error!("failed broadcasting incoming post: {}", e);
-                    break;
-                }
-            }
-            debug!("stop reading incoming posts from {}", user_id);
-        });
-        // add listener of outgoing posts
+        request: tonic::Request<Registration>,
+    ) -> Result<tonic::Response<Self::GetPostsStream>, tonic::Status> {
+        debug!("get_posts(): {:?}", &request);
+        let user_id = request.into_inner().user_id;
         let (listener, notifier) = mpsc::channel::<Arc<Post>>(4);
         if let Ok(mut listeners) = self.posts_listeners.write() {
             listeners.insert(user_id, listener);
         } else {
-            return Err(tonic::Status::internal("no access to post listeners"));
+            return Err(tonic::Status::internal("no access to posts listeners"));
         }
-        // launch outgoing post streaming
-        let (tx_outgoing, rx_outgoing) = mpsc::channel::<Result<Post, _>>(16);
+        //todo: collect existing posts
+        let existing = Vec::new();
+        // if let Ok(users) = self.users.read() {
+        //     for user in users.values() {
+        //         if user.user_id != user_id {
+        //             existing.push(user.clone());
+        //         }
+        //     }
+        // } else {
+        //     error!("failed to read existing users");
+        // }
+        // start permanent listener that streams data to remote client
+        let (tx, rx) = mpsc::channel(4);
         tokio::spawn(async move {
-            debug!("start streaming outgoing posts to {}", user_id);
+            debug!("start streaming posts to {}", user_id);
+            if !existing.is_empty() {
+                // send existing posts
+                for post in existing {
+                    if let Err(e) = tx.send(Ok(post)).await {
+                        error!("failed sending existing post: {}", e);
+                    }
+                }
+            }
+            // re-translate new users
             let mut notifier = notifier;
             while let Some(post) = notifier.recv().await {
-                if let Err(e) = tx_outgoing.send(Ok((*post).clone())).await {
-                    error!("failed send outgoing post: {}", e);
+                debug!("re-translating new post to {}", user_id);
+                if let Err(e) = tx.send(Ok((*post).clone())).await {
+                    error!("failed sending post: {}, stop", e);
                     break;
                 }
             }
-            debug!("stop streaming outgoing posts to {}", user_id);
+            debug!("stop streaming posts to {}", user_id);
         });
-        // launch incoming posts "broadcasting"
-        while let Some(post) = rx_incoming.recv().await {
-            self.notify_new_post(post).await;
-        }
-
+        // start streaming activity, data consumer
         Ok(Response::new(Box::pin(
-            tokio_stream::wrappers::ReceiverStream::new(rx_outgoing),
+            tokio_stream::wrappers::ReceiverStream::new(rx),
         )))
     }
 
@@ -416,6 +414,20 @@ impl ChatRoomService for ChatRoomImpl {
         Ok(Response::new(Box::pin(
             tokio_stream::wrappers::ReceiverStream::new(rx),
         )))
+    }
+
+    #[doc = " Creates new post"]
+    async fn create_post(
+        &self,
+        request: tonic::Request<Post>,
+    ) -> Result<tonic::Response<RpcResult>, tonic::Status> {
+        debug!("create_post(): {:?}", &request);
+        let post = request.into_inner();
+        self.notify_new_post(post).await;
+        Ok(Response::new(RpcResult {
+            ok: true,
+            description: String::from("accepted"),
+        }))
     }
 
     #[doc = " Creates new chat"]
