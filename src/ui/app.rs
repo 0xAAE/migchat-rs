@@ -414,7 +414,9 @@ impl App {
     // chat events handling
 
     pub fn on_user_entered(&mut self, user: proto::User) {
-        self.users.push(user);
+        if !self.users.iter().any(|u| u.user_id == user.user_id) {
+            self.users.push(user);
+        }
     }
 
     pub fn on_chat_updated(&mut self, chat: proto::Chat) {
@@ -428,4 +430,25 @@ impl App {
             &invitation
         );
     }
+
+    pub fn on_new_post(&mut self, post: proto::Post) {
+        self.posts.push(post);
+    }
+
+    pub fn on_chat_deleted(&mut self, chat_id: u32) {
+        self.chats.remove(&chat_id);
+    }
+
+    pub fn on_user_gone(&mut self, user_id: u64) {
+        self.users.retain(|u| u.user_id != user_id);
+    }
+}
+
+#[test]
+fn test_vec_iter() {
+    let mut v = vec![4; 4];
+    if !v.iter().any(|&n| n == 7) {
+        v.push(7);
+    }
+    assert_eq!(v.len(), 5);
 }

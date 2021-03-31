@@ -191,10 +191,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         ChatRoomEvent::Invitation(invitation) => {
                                             app.on_get_invited(invitation);
                                         }
-                                        _ => {
-                                            error!(
-                                                "handling this chat event is not implemented yet"
-                                            );
+                                        ChatRoomEvent::NewPost(post) => {
+                                            app.on_new_post(post);
+                                        }
+                                        ChatRoomEvent::ChatDeleted(chat_id) => {
+                                            app.on_chat_deleted(chat_id);
+                                        }
+                                        ChatRoomEvent::UserGone(user_id) => {
+                                            app.on_user_gone(user_id);
                                         }
                                     },
                                 }
