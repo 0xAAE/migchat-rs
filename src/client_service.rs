@@ -111,7 +111,7 @@ impl MigchatClient {
                 .send(Event::Client(ChatRoomEvent::Registered(self.user.user_id)))
                 .await
             {
-                error!("failed to translate own user_id to UI");
+                error!("failed to translate own user_id to UI: {}", e);
             }
             // launch accepting users in separate task
             let fut = MigchatClient::read_users_stream(

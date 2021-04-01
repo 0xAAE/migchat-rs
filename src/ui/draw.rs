@@ -3,7 +3,7 @@ use tui::{
     backend::Backend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::Span,
+    text::{Span, Spans},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
     Frame,
 };
@@ -74,7 +74,34 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let chats: Vec<ListItem> = app
         .chats
         .values()
-        .map(|c| ListItem::new(format!("{} ({})", c.description, c.users.len())))
+        .map(|c| {
+            let mut lines = Vec::new();
+            lines.push(Spans::from(Span::styled(
+                &c.description,
+                get_style(app.get_state(Widget::Chats)),
+            )));
+            let mut users = String::from("(");
+            let mut continue_flag = false;
+            for u in &c.users {
+                if continue_flag {
+                    users.push_str(", ");
+                }
+                users.push_str(
+                    app.get_user(*u)
+                        .and_then(|u| Some(u.short_name.clone()))
+                        .unwrap_or_else(|| format!("{}", u))
+                        .as_str(),
+                );
+                continue_flag = true;
+            }
+            users.push(')');
+            if users.len() > 2 {
+                lines.push(Spans::from(Span::raw(users)));
+            } else {
+                lines.push(Spans::from(Span::raw("(empty)")));
+            }
+            ListItem::new(lines).style(get_style(app.get_state(Widget::Chats)))
+        })
         .collect();
     let chats = List::new(chats)
         .block(Block::default().borders(Borders::ALL).title("Chats"))
