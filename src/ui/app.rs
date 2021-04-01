@@ -229,7 +229,18 @@ impl App {
     pub fn on_esc(&mut self) {
         match self.modal {
             Widget::Input => self.modal = Widget::App,
-            Widget::App => {}
+            Widget::App => match self.focused {
+                Widget::Users => {
+                    self.users_state.select(None);
+                }
+                Widget::Chats => {
+                    self.chats_state.select(None);
+                }
+                Widget::Posts => {
+                    self.posts_state.select(None);
+                }
+                _ => {}
+            },
             _ => {
                 error!("widget {:?} must not be modal", self.modal);
                 self.modal = Widget::App;
@@ -286,6 +297,13 @@ impl App {
                             }
                             _ => {}
                         }
+                    }
+                }
+                'p' => {
+                    // create new post
+                    if self.get_sel_chat().is_some() {
+                        self.modal = Widget::Input;
+                        self.input = Some(InputMode::new_post());
                     }
                 }
                 'i' => {

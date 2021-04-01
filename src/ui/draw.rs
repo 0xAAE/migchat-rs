@@ -9,6 +9,14 @@ use tui::{
 };
 use tui_logger::{TuiLoggerSmartWidget, TuiLoggerWidget};
 
+fn get_style(state: WidgetState) -> Style {
+    match state {
+        WidgetState::Modal => Style::default().fg(Color::Green),
+        WidgetState::Focused => Style::default().fg(Color::Cyan),
+        _ => Style::default().fg(Color::Gray),
+    }
+}
+
 pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     //
     // styles
@@ -17,7 +25,7 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
     let selected_style = Style::default()
-        .bg(Color::LightGreen)
+        .bg(Color::Gray)
         .add_modifier(Modifier::BOLD);
     //
     // layout
@@ -65,8 +73,8 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let users = List::new(users)
         .block(Block::default().borders(Borders::ALL).title("Users"))
         .style(get_style(app.get_state(Widget::Users)))
-        .highlight_style(selected_style.clone())
-        .highlight_symbol(">> ");
+        .highlight_style(selected_style.clone());
+    // .highlight_symbol("> ");
     f.render_stateful_widget(users, columns[0], &mut app.users_state);
     //
     // chats
@@ -106,8 +114,8 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let chats = List::new(chats)
         .block(Block::default().borders(Borders::ALL).title("Chats"))
         .style(get_style(app.get_state(Widget::Chats)))
-        .highlight_style(selected_style.clone())
-        .highlight_symbol(">> ");
+        .highlight_style(selected_style.clone());
+    // .highlight_symbol("> ");
     f.render_stateful_widget(chats, columns[1], &mut app.chats_state);
     //
     // selected chat content
@@ -136,8 +144,8 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let content = List::new(content)
         .block(Block::default().borders(Borders::ALL).title("Posts"))
         .style(get_style(app.get_state(Widget::Posts)))
-        .highlight_style(selected_style.clone())
-        .highlight_symbol(">> ");
+        .highlight_style(selected_style.clone());
+    // .highlight_symbol("> ");
     f.render_stateful_widget(content, columns[2], &mut app.posts_state);
     //
     // logger
@@ -175,7 +183,8 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                     .style(get_style(app.get_state(Widget::Input)))
                     .title(input.title.as_str()),
             );
-        let area = Rect::new(columns[1].left() + 5, columns[1].top() + 5, 60, 3); // centered_rect(60, 10, f.size());
+        //let area = Rect::new(columns[1].left() + 5, columns[1].top() + 5, 60, 3);
+        let area = centered_rect(60, 3, f.size());
         f.render_widget(Clear, area); //this clears out the background
         f.render_widget(block, area);
         // Make the cursor visible and ask tui-rs to put it at the specified coordinates after rendering
@@ -185,14 +194,6 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             // Move one line down, from the border to the input line
             area.y + 1,
         )
-    }
-}
-
-fn get_style(state: WidgetState) -> Style {
-    match state {
-        WidgetState::Modal => Style::default().fg(Color::Green),
-        WidgetState::Focused => Style::default().fg(Color::Magenta),
-        _ => Style::default().fg(Color::Gray),
     }
 }
 
