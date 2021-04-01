@@ -142,8 +142,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // launch UI
     let user = UserInfo {
-        name: settings.get_str("name").unwrap_or("Anonimous".to_string()),
-        short_name: settings.get_str("short_name").unwrap_or("Nemo".to_string()),
+        name: settings.get_str("name").unwrap_or(String::new()),
+        short_name: settings.get_str("short_name").unwrap_or(String::new()),
     };
     let extended_log = settings.get_bool("extended_log").unwrap_or(false);
     tokio::task::block_in_place(move || {

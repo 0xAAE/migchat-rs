@@ -30,6 +30,7 @@ pub enum State {
 enum InputResult {
     NewChat, // new chat name
     NewPost, // new post text
+    UserInfo,
 }
 
 pub struct InputMode {
@@ -51,6 +52,14 @@ impl InputMode {
         InputMode {
             purpose: InputResult::NewPost,
             title: "Post content".to_string(),
+            text: String::with_capacity(512),
+        }
+    }
+
+    pub fn new_user_info() -> Self {
+        InputMode {
+            purpose: InputResult::UserInfo,
+            title: "Login, Full Name".to_string(),
             text: String::with_capacity(512),
         }
     }
@@ -83,6 +92,17 @@ impl App {
         tx_event: mpsc::Sender<Event>,
         extended_log: bool,
     ) -> Self {
+        let need_user_info = user.name.is_empty() && user.short_name.is_empty();
+        let modal = if need_user_info {
+            Widget::Input
+        } else {
+            Widget::App
+        };
+        let input = if need_user_info {
+            Some(InputMode::new_user_info())
+        } else {
+            None
+        };
         App {
             title: "MiGChat".to_string(),
             users: Vec::new(),
@@ -92,7 +112,7 @@ impl App {
             posts: Vec::with_capacity(128),
             posts_state: ListState::default(),
             logger_state: TuiWidgetState::new(),
-            user_description: format!("{} ({})", user.name, user.short_name),
+            user_description: format!("{}", user),
             user: proto::User {
                 user_id: 0,
                 name: user.name,
@@ -102,8 +122,8 @@ impl App {
             tx_command,
             tx_event,
             focused: Widget::Chats,
-            modal: Widget::App,
-            input: None,
+            modal,
+            input,
         }
     }
 
@@ -214,6 +234,16 @@ impl App {
                                 {
                                     error!("failed creating post: {}", e);
                                 }
+                            }
+                        }
+                        InputResult::UserInfo => {
+                            if let Ok(info) = input.text.parse::<proto::UserInfo>() {
+                                self.user_description = format!("{}", &info);
+                                self.user.name = info.name;
+                                self.user.short_name = info.short_name;
+                            } else {
+                                // remaining modal state of input
+                                return;
                             }
                         }
                     }
