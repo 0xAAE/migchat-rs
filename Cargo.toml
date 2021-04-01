@@ -11,7 +11,7 @@ name = "migchat-server"
 path = "src/server.rs"
 
 [[bin]]
-name = "migchat-client"
+name = "migchat"
 path = "src/client.rs"
 
 [dependencies]
