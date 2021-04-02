@@ -131,17 +131,21 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             .iter()
             .filter(|post| post.chat_id == chat.chat_id)
             .map(|post| {
-                ListItem::new(format!(
-                    "{}: {}",
-                    app.get_user(post.user_id)
-                        .map(|u| if u.user_id == app.user.user_id {
-                            String::from("me")
-                        } else {
-                            u.short_name.clone()
-                        })
-                        .unwrap_or_else(|| format!("{}", post.user_id)),
-                    post.text
-                ))
+                ListItem::new(Spans::from(vec![
+                    Span::styled(
+                        app.get_user(post.user_id)
+                            .map(|u| {
+                                if u.user_id == app.user.user_id {
+                                    String::from("me")
+                                } else {
+                                    u.short_name.clone()
+                                }
+                            })
+                            .unwrap_or_else(|| format!("{}", post.user_id)),
+                        selected_style.add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(format!(": {}", post.text.as_str()), posts_style),
+                ]))
             })
             .collect()
     } else {
