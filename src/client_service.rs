@@ -65,6 +65,13 @@ impl MigchatClient {
                         break;
                     }
                 }
+                Command::Exit => {
+                    info!("exit requested, proceed");
+                    if let Err(e) = tx_event.send(Event::Exit).await {
+                        error!("failed routing exit event chat: {}", e);
+                    }
+                    return Ok(());
+                }
                 _ => {
                     if exit_flag.load(Ordering::SeqCst) {
                         info!("exitting before registration info received");
