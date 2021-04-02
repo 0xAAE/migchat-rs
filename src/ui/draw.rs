@@ -66,7 +66,7 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let users: Vec<ListItem> = app
         .users
         .iter()
-        .map(|u| ListItem::new(format!("{} ({})", u.name, u.short_name)))
+        .map(|u| ListItem::new(App::get_user_description(u)))
         .collect();
     let users = List::new(users)
         .block(Block::default().borders(Borders::ALL).title("users"))
@@ -81,9 +81,15 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         .chats
         .values()
         .map(|c| {
+            let posts_count = app.get_posts_count(c.chat_id);
+            let chat_header = if posts_count > 0 {
+                format!("{} ({})", c.description, posts_count)
+            } else {
+                format!("{}", c.description)
+            };
             let mut lines = Vec::new();
             lines.push(Spans::from(Span::styled(
-                &c.description,
+                chat_header,
                 get_style(app.get_state(Widget::Chats)),
             )));
             let mut users = String::from("(");
@@ -142,7 +148,11 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         vec![ListItem::new("select chat to view posts")]
     };
     let posts_title = if let Some(chat) = app.get_sel_chat() {
-        chat.description.clone()
+        format!(
+            "{} ({})",
+            chat.description.clone(),
+            app.get_posts_count(chat.chat_id)
+        )
     } else {
         String::from("No chat selected")
     };

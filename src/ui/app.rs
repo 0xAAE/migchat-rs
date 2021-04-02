@@ -393,8 +393,11 @@ impl App {
         self.chats.get(&chat_id)
     }
 
-    pub fn get_posts_count(&self, chat_id: proto::ChatId) -> Option<usize> {
-        unimplemented!();
+    pub fn get_posts_count(&self, chat_id: proto::ChatId) -> usize {
+        self.posts
+            .iter()
+            .filter(|post| post.chat_id == chat_id)
+            .count()
     }
 
     pub fn get_sel_user(&self) -> Option<&proto::User> {
@@ -409,6 +412,10 @@ impl App {
         } else {
             self.users.iter().find(|u| u.user_id == user_id)
         }
+    }
+
+    pub fn get_user_description(user: &proto::User) -> String {
+        format!("{}", proto::UserInfo::from(user.clone()))
     }
 
     fn list_next(state: &mut ListState, count: usize) {
