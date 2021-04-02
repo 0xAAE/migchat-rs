@@ -27,6 +27,7 @@ pub enum State {
 }
 
 // input text consumer
+#[derive(PartialEq)]
 enum InputResult {
     NewChat, // new chat name
     NewPost, // new post text
@@ -263,7 +264,13 @@ impl App {
 
     pub fn on_esc(&mut self) {
         match self.modal {
-            Widget::Input => self.modal = Widget::App,
+            Widget::Input => {
+                if let Some(mode) = &self.input {
+                    if mode.purpose != InputResult::UserInfo {
+                        self.modal = Widget::App
+                    }
+                }
+            }
             Widget::App => match self.focused {
                 Widget::Users => {
                     self.users_state.select(None);
