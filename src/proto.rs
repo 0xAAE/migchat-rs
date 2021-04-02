@@ -3,9 +3,17 @@ use std::{
     error::Error,
     fmt::{self, Display},
     str::FromStr,
+    sync::atomic,
 };
 
 tonic::include_proto!("migchat"); // The string specified here must match the proto package name
+
+pub type ChatId = u32;
+pub type UserId = u64;
+#[allow(dead_code)]
+pub type AtomicChatId = atomic::AtomicU32;
+#[allow(dead_code)]
+pub type AtomicUserId = atomic::AtomicU64;
 
 impl Display for UserInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -2,7 +2,7 @@ use crate::proto;
 
 #[derive(Debug, PartialEq, Clone)]
 pub(crate) struct User {
-    pub id: u32,
+    pub id: proto::UserId,
     pub name: String,
     pub short_name: String,
 }

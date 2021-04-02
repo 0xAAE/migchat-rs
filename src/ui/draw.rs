@@ -24,9 +24,7 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let caption_style = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
-    let selected_style = Style::default()
-        .bg(Color::Gray)
-        .add_modifier(Modifier::BOLD);
+    let selected_style = Style::default().add_modifier(Modifier::BOLD);
     //
     // layout
     //
@@ -71,10 +69,10 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         .map(|u| ListItem::new(format!("{} ({})", u.name, u.short_name)))
         .collect();
     let users = List::new(users)
-        .block(Block::default().borders(Borders::ALL).title("Users"))
+        .block(Block::default().borders(Borders::ALL).title("users"))
         .style(get_style(app.get_state(Widget::Users)))
+        .highlight_symbol("> ")
         .highlight_style(selected_style.clone());
-    // .highlight_symbol("> ");
     f.render_stateful_widget(users, columns[0], &mut app.users_state);
     //
     // chats
@@ -103,19 +101,21 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                 continue_flag = true;
             }
             users.push(')');
+            let users_style =
+                get_style(app.get_state(Widget::Chats)).add_modifier(Modifier::ITALIC);
             if users.len() > 2 {
-                lines.push(Spans::from(Span::raw(users)));
+                lines.push(Spans::from(Span::styled(users, users_style)));
             } else {
-                lines.push(Spans::from(Span::raw("(empty)")));
+                lines.push(Spans::from(Span::styled("(empty)", users_style)));
             }
             ListItem::new(lines).style(get_style(app.get_state(Widget::Chats)))
         })
         .collect();
     let chats = List::new(chats)
-        .block(Block::default().borders(Borders::ALL).title("Chats"))
+        .block(Block::default().borders(Borders::ALL).title("select chat"))
         .style(get_style(app.get_state(Widget::Chats)))
+        .highlight_symbol("> ")
         .highlight_style(selected_style.clone());
-    // .highlight_symbol("> ");
     f.render_stateful_widget(chats, columns[1], &mut app.chats_state);
     //
     // selected chat content
@@ -129,7 +129,7 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                     "{}: {}",
                     app.get_user(post.user_id)
                         .and_then(|u| if u.user_id == app.user.user_id {
-                            Some(String::from("Me"))
+                            Some(String::from("me"))
                         } else {
                             Some(u.short_name.clone())
                         })
@@ -141,11 +141,16 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     } else {
         vec![ListItem::new("select chat to view posts")]
     };
+    let posts_title = if let Some(chat) = app.get_sel_chat() {
+        chat.description.clone()
+    } else {
+        String::from("No chat selected")
+    };
     let content = List::new(content)
-        .block(Block::default().borders(Borders::ALL).title("Posts"))
+        .block(Block::default().borders(Borders::ALL).title(posts_title))
         .style(get_style(app.get_state(Widget::Posts)))
+        .highlight_symbol("> ")
         .highlight_style(selected_style.clone());
-    // .highlight_symbol("> ");
     f.render_stateful_widget(content, columns[2], &mut app.posts_state);
     //
     // logger
@@ -164,7 +169,7 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         let tui_w: TuiLoggerWidget = TuiLoggerWidget::default()
             .block(
                 Block::default()
-                    .title("Independent Tui Logger View")
+                    .title("Events viewer")
                     .border_style(get_style(app.get_state(Widget::Log)))
                     .borders(Borders::ALL),
             )

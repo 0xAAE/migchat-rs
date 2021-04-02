@@ -6,10 +6,7 @@ use std::{
     collections::HashMap,
     ops::Deref,
     pin::Pin,
-    sync::{
-        atomic::{AtomicU32, Ordering},
-        Arc, RwLock,
-    },
+    sync::{atomic::Ordering, Arc, RwLock},
 };
 use tokio::sync::mpsc;
 use tonic::{transport::Server, Request, Response, Status};
@@ -19,29 +16,29 @@ mod proto;
 
 use proto::chat_room_service_server::{ChatRoomService, ChatRoomServiceServer};
 use proto::{
-    Chat, ChatInfo, ChatReference, Invitation, Post, Registration, Result as RpcResult,
-    UpdateChats, UpdateUsers, User, UserInfo,
+    AtomicChatId, Chat, ChatId, ChatInfo, ChatReference, Invitation, Post, Registration,
+    Result as RpcResult, UpdateChats, UpdateUsers, User, UserId, UserInfo,
 };
 //use user::User;
 
 #[derive(Debug, Default)]
 pub struct ChatRoomImpl {
-    next_chat_id: AtomicU32,
+    next_chat_id: AtomicChatId,
     // user_id -> user info:
-    users: RwLock<HashMap<u64, User>>,
+    users: RwLock<HashMap<UserId, User>>,
     // chat_id -> chat info:
-    chats: RwLock<HashMap<u32, proto::Chat>>,
+    chats: RwLock<HashMap<ChatId, proto::Chat>>,
     //
     // listeners, all are linked to the appropriate user_id
     //
     // new users:
-    users_listeners: RwLock<HashMap<u64, mpsc::Sender<Arc<User>>>>,
+    users_listeners: RwLock<HashMap<UserId, mpsc::Sender<Arc<User>>>>,
     // new invitations:
-    invitations_listeners: RwLock<HashMap<u64, mpsc::Sender<Invitation>>>,
+    invitations_listeners: RwLock<HashMap<UserId, mpsc::Sender<Invitation>>>,
     // new chats:
-    chats_listeners: RwLock<HashMap<u64, mpsc::Sender<Arc<Chat>>>>,
+    chats_listeners: RwLock<HashMap<UserId, mpsc::Sender<Arc<Chat>>>>,
     // new posts
-    posts_listeners: RwLock<HashMap<u64, mpsc::Sender<Arc<Post>>>>,
+    posts_listeners: RwLock<HashMap<UserId, mpsc::Sender<Arc<Post>>>>,
 }
 
 impl ChatRoomImpl {
@@ -63,7 +60,7 @@ impl ChatRoomImpl {
         }
     }
 
-    async fn notify_chat_closed(&self, _chat_id: u32) {
+    async fn notify_chat_closed(&self, _chat_id: ChatId) {
         //todo: implement notifying through "chat updated" channel
     }
 
@@ -85,7 +82,7 @@ impl ChatRoomImpl {
         }
     }
 
-    async fn notify_user_gone(&self, _user_id: u64) {
+    async fn notify_user_gone(&self, _user_id: UserId) {
         //todo: implement sending gone info through listeners (enum?)
     }
 

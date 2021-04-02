@@ -1,5 +1,7 @@
 use crate::proto::chat_room_service_client::ChatRoomServiceClient;
-use crate::proto::{Chat, ChatInfo, ChatReference, Invitation, Post, Registration, User, UserInfo};
+use crate::proto::{
+    Chat, ChatId, ChatInfo, ChatReference, Invitation, Post, Registration, User, UserId, UserInfo,
+};
 use crate::Event;
 
 use config::Config;
@@ -15,11 +17,11 @@ use tokio::sync::mpsc;
 use tonic::transport::{Channel, Endpoint};
 
 pub enum ChatRoomEvent {
-    Registered(u64),        // user_id
+    Registered(UserId),     // user_id
     UserEntered(User),      // user_id, name, short_name
-    UserGone(u64),          // user_id
+    UserGone(UserId),       // user_id
     ChatUpdated(Chat),      // chat_id
-    ChatDeleted(u32),       // chat_id
+    ChatDeleted(ChatId),    // chat_id
     Invitation(Invitation), // user_id, chat_id
     NewPost(Post),          // chat_id, user_id, text, [attachments]
 }
@@ -27,7 +29,7 @@ pub enum ChatRoomEvent {
 pub enum Command {
     CreateChat(ChatInfo), // create new chat
     Invite(Invitation),   // invite user to chat
-    EnterChat(u32),       // enter chat specified
+    EnterChat(ChatId),    // enter chat specified
     Post(Post),           // send new post
     Exit,                 // exit chat room
 }
@@ -243,7 +245,7 @@ impl MigchatClient {
     async fn read_users_stream(
         client: ChatRoomServiceClient<Channel>,
         tx_event: mpsc::Sender<Event>,
-        user_id: u64,
+        user_id: UserId,
     ) {
         let mut client = client;
         match client
@@ -286,7 +288,7 @@ impl MigchatClient {
     async fn read_invitations_stream(
         client: ChatRoomServiceClient<Channel>,
         tx_event: mpsc::Sender<Event>,
-        user_id: u64,
+        user_id: UserId,
     ) {
         let mut client = client;
         match client
@@ -314,7 +316,7 @@ impl MigchatClient {
     async fn read_posts_stream(
         client: ChatRoomServiceClient<Channel>,
         tx_event: mpsc::Sender<Event>,
-        user_id: u64,
+        user_id: UserId,
     ) {
         let mut client = client;
         match client
@@ -342,7 +344,7 @@ impl MigchatClient {
     async fn read_chats_stream(
         client: ChatRoomServiceClient<Channel>,
         tx_event: mpsc::Sender<Event>,
-        user_id: u64,
+        user_id: UserId,
     ) {
         let mut client = client;
         match client

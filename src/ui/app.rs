@@ -1,4 +1,4 @@
-use crate::proto;
+use crate::proto::{self, ChatId, UserId};
 use crate::{Command, Event};
 use log::{error, warn};
 use std::collections::HashMap;
@@ -69,7 +69,7 @@ pub struct App {
     pub title: String,
     pub users: Vec<proto::User>,
     pub users_state: ListState,
-    pub chats: HashMap<u32, proto::Chat>,
+    pub chats: HashMap<ChatId, proto::Chat>,
     pub chats_state: ListState,
     pub posts: Vec<proto::Post>,
     pub posts_state: ListState,
@@ -389,8 +389,12 @@ impl App {
             .and_then(|idx| self.chats.values().nth(idx))
     }
 
-    pub fn get_chat(&self, chat_id: u32) -> Option<&proto::Chat> {
+    pub fn get_chat(&self, chat_id: ChatId) -> Option<&proto::Chat> {
         self.chats.get(&chat_id)
+    }
+
+    pub fn get_posts_count(&self, chat_id: proto::ChatId) -> Option<usize> {
+        unimplemented!();
     }
 
     pub fn get_sel_user(&self) -> Option<&proto::User> {
@@ -399,7 +403,7 @@ impl App {
             .and_then(|idx| self.users.get(idx))
     }
 
-    pub fn get_user(&self, user_id: u64) -> Option<&proto::User> {
+    pub fn get_user(&self, user_id: UserId) -> Option<&proto::User> {
         if self.user.user_id == user_id {
             Some(&self.user)
         } else {
@@ -441,7 +445,7 @@ impl App {
 
     // chat events handling
 
-    pub fn on_registered(&mut self, user_id: u64) {
+    pub fn on_registered(&mut self, user_id: UserId) {
         self.user.user_id = user_id;
     }
 
@@ -480,11 +484,11 @@ impl App {
         self.posts.push(post);
     }
 
-    pub fn on_chat_deleted(&mut self, chat_id: u32) {
+    pub fn on_chat_deleted(&mut self, chat_id: ChatId) {
         self.chats.remove(&chat_id);
     }
 
-    pub fn on_user_gone(&mut self, user_id: u64) {
+    pub fn on_user_gone(&mut self, user_id: UserId) {
         self.users.retain(|u| u.user_id != user_id);
     }
 }
