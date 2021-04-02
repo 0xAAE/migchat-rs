@@ -1,4 +1,3 @@
-use std::hash::{Hash, Hasher};
 use std::{
     error::Error,
     fmt::{self, Display},
@@ -25,20 +24,11 @@ impl Display for UserInfo {
             } else {
                 write!(f, "{}", self.name)
             }
+        } else if has_short {
+            write!(f, "{}", self.short_name)
         } else {
-            if has_short {
-                write!(f, "{}", self.short_name)
-            } else {
-                write!(f, "<not set>")
-            }
+            write!(f, "<not set>")
         }
-    }
-}
-
-impl Hash for UserInfo {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.name.hash(state);
-        self.short_name.hash(state);
     }
 }
 
@@ -51,7 +41,7 @@ impl Error for ParseUserError {}
 
 impl Display for ParseUserError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "SuperError is here!")
+        write!(f, "{}", self.text)
     }
 }
 

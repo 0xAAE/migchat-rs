@@ -4,7 +4,6 @@ use crate::proto::{
 };
 use crate::Event;
 
-use config::Config;
 use log::{debug, error, info, warn};
 use std::{
     sync::{
@@ -27,6 +26,7 @@ pub enum ChatRoomEvent {
 }
 
 pub enum Command {
+    Register(UserInfo),   //register on server
     CreateChat(ChatInfo), // create new chat
     Invite(Invitation),   // invite user to chat
     EnterChat(ChatId),    // enter chat specified
@@ -35,45 +35,12 @@ pub enum Command {
 }
 
 pub struct MigchatClient {
-    user: User,
     rx_command: mpsc::Receiver<Command>,
-    test_users: Option<Vec<User>>,
 }
 
 impl MigchatClient {
-    pub fn new(settings: &Config, rx_command: mpsc::Receiver<Command>) -> Self {
-        let name = settings.get_str("name").unwrap_or("Anonimous".to_string());
-        let short_name = settings.get_str("short_name").unwrap_or("Nemo".to_string());
-        // if there are test users in settings, create them
-        let test_users = if let Ok(config_test_users) = settings.get_array("test_users") {
-            let mut next_id = 100;
-            let mut test_users = Vec::new();
-            for item in config_test_users {
-                if let Ok(names) = item.into_array() {
-                    if names.len() == 2 {
-                        test_users.push(User {
-                            user_id: next_id,
-                            name: names[0].to_string(),
-                            short_name: names[1].to_string(),
-                        });
-                        next_id += 1;
-                    }
-                }
-            }
-            Some(test_users)
-        } else {
-            None
-        };
-
-        MigchatClient {
-            user: User {
-                user_id: 0,
-                name,
-                short_name,
-            },
-            rx_command,
-            test_users,
-        }
+    pub fn new(rx_command: mpsc::Receiver<Command>) -> Self {
+        MigchatClient { rx_command }
     }
 
     pub async fn launch(
@@ -86,66 +53,59 @@ impl MigchatClient {
             .connect()
             .await?;
 
-        if let Some(test_users) = self.test_users.take() {
-            for u in test_users {
-                if let Err(e) = tx_event
-                    .send(Event::Client(ChatRoomEvent::UserEntered(u)))
-                    .await
-                {
-                    error!("failed send test user: {}", e);
+        let mut client = ChatRoomServiceClient::new(channel);
+
+        // wait registartion info from App/UI
+        let mut user_info = UserInfo::default();
+        while let Some(command) = self.rx_command.recv().await {
+            match command {
+                Command::Register(info) => {
+                    if !info.name.is_empty() || !info.short_name.is_empty() {
+                        user_info = info;
+                        break;
+                    }
+                }
+                _ => {
+                    if exit_flag.load(Ordering::SeqCst) {
+                        info!("exitting before registration info received");
+                        return Ok(());
+                    }
                 }
             }
         }
 
-        let mut client = ChatRoomServiceClient::new(channel);
-
         // register
-        let user_info = UserInfo {
-            name: self.user.name.clone(),
-            short_name: self.user.short_name.clone(),
-        };
-        info!("registering as {:?}", user_info);
+        info!("logging as {}", &user_info);
         let reg_req = tonic::Request::new(user_info);
-        if let Ok(reg_res) = client.register(reg_req).await {
-            self.user.user_id = reg_res.into_inner().user_id;
-            info!("logged as {:?}", self.user);
+        let user_id: UserId = if let Ok(reg_res) = client.register(reg_req).await {
+            let user_id = reg_res.into_inner().user_id;
+            info!("logged successfully");
             if let Err(e) = tx_event
-                .send(Event::Client(ChatRoomEvent::Registered(self.user.user_id)))
+                .send(Event::Client(ChatRoomEvent::Registered(user_id)))
                 .await
             {
                 error!("failed to translate own user_id to UI: {}", e);
             }
             // launch accepting users in separate task
-            let fut = MigchatClient::read_users_stream(
-                client.clone(),
-                tx_event.clone(),
-                self.user.user_id,
-            );
+            let fut = MigchatClient::read_users_stream(client.clone(), tx_event.clone(), user_id);
             tokio::spawn(fut);
             // launch accepting invitations in separate task
-            let fut = MigchatClient::read_invitations_stream(
-                client.clone(),
-                tx_event.clone(),
-                self.user.user_id,
-            );
+            let fut =
+                MigchatClient::read_invitations_stream(client.clone(), tx_event.clone(), user_id);
             tokio::spawn(fut);
             // launch accepting chats in separate task
-            let fut = MigchatClient::read_chats_stream(
-                client.clone(),
-                tx_event.clone(),
-                self.user.user_id,
-            );
+            let fut = MigchatClient::read_chats_stream(client.clone(), tx_event.clone(), user_id);
             tokio::spawn(fut);
             // launch accepting posts in separate task
-            let fut = MigchatClient::read_posts_stream(
-                client.clone(),
-                tx_event.clone(),
-                self.user.user_id,
-            );
+            let fut = MigchatClient::read_posts_stream(client.clone(), tx_event.clone(), user_id);
             tokio::spawn(fut);
+            user_id
         } else {
             warn!("registration failed");
-        }
+            return Err(Box::new(ClientServiceError {
+                text: String::from("failed to register on server"),
+            }));
+        };
 
         // start command loop
         loop {
@@ -159,7 +119,7 @@ impl MigchatClient {
                 Ok(command) => match command {
                     Some(command) => match command {
                         Command::CreateChat(info) => {
-                            assert_eq!(info.user_id, self.user.user_id);
+                            assert_eq!(info.user_id, user_id);
                             match client.create_chat(info).await {
                                 Ok(response) => {
                                     if let Err(e) = tx_event
@@ -185,7 +145,7 @@ impl MigchatClient {
                             }
                         },
                         Command::Post(post) => {
-                            assert_eq!(post.user_id, self.user.user_id);
+                            assert_eq!(post.user_id, user_id);
                             match client.create_post(post).await {
                                 Ok(response) => {
                                     debug!("send post: {:?}", response.into_inner());
@@ -196,13 +156,7 @@ impl MigchatClient {
                             }
                         }
                         Command::EnterChat(chat_id) => {
-                            match client
-                                .enter_chat(ChatReference {
-                                    user_id: self.user.user_id,
-                                    chat_id,
-                                })
-                                .await
-                            {
+                            match client.enter_chat(ChatReference { user_id, chat_id }).await {
                                 Ok(response) => {
                                     debug!("send post: {:?}", response.into_inner());
                                 }
@@ -212,7 +166,20 @@ impl MigchatClient {
                             }
                         }
                         Command::Exit => {
-                            error!("exitting chat room is not implemented yet");
+                            match client.logout(Registration { user_id }).await {
+                                Ok(response) => {
+                                    debug!("logout: {:?}", response.into_inner());
+                                }
+                                Err(e) => {
+                                    warn!("failed to logout: {}", e);
+                                }
+                            }
+                            if let Err(e) = tx_event.send(Event::Exit).await {
+                                error!("failed routing exit event chat: {}", e);
+                            }
+                        }
+                        Command::Register(_) => {
+                            warn!("user has alredy registered");
                         }
                     },
                     None => {
@@ -222,23 +189,7 @@ impl MigchatClient {
                 },
             }
         }
-
-        match client
-            .logout(Registration {
-                user_id: self.user.user_id,
-            })
-            .await
-        {
-            Ok(response) => {
-                debug!("logout: {:?}", response.into_inner());
-            }
-            Err(e) => {
-                warn!("failed to logout: {}", e);
-            }
-        }
-
         info!("exitting, bye!");
-
         Ok(())
     }
 
@@ -382,5 +333,18 @@ impl MigchatClient {
                 warn!("no more updated chats: {}", e);
             }
         }
+    }
+}
+
+#[derive(Debug)]
+struct ClientServiceError {
+    text: String,
+}
+
+impl std::error::Error for ClientServiceError {}
+
+impl std::fmt::Display for ClientServiceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.text)
     }
 }

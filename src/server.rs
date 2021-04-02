@@ -1,9 +1,10 @@
 use env_logger::{fmt::TimestampPrecision, Builder, Env, Target};
 use futures::Stream; //, StreamExt};
-use fxhash::hash64;
+use fxhash::FxHasher64;
 use log::{debug, error, info};
 use std::{
     collections::HashMap,
+    hash::Hasher,
     ops::Deref,
     pin::Pin,
     sync::{atomic::Ordering, Arc, RwLock},
@@ -19,7 +20,13 @@ use proto::{
     AtomicChatId, Chat, ChatId, ChatInfo, ChatReference, Invitation, Post, Registration,
     Result as RpcResult, UpdateChats, UpdateUsers, User, UserId, UserInfo,
 };
-//use user::User;
+
+fn hash64(user: &UserInfo) -> u64 {
+    let mut hasher = FxHasher64::default();
+    hasher.write(user.name.as_bytes());
+    hasher.write(user.short_name.as_bytes());
+    hasher.finish()
+}
 
 #[derive(Debug, Default)]
 pub struct ChatRoomImpl {

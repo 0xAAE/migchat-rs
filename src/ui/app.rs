@@ -1,5 +1,5 @@
 use crate::proto::{self, ChatId, UserId};
-use crate::{Command, Event};
+use crate::Command;
 use log::{error, warn};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -79,7 +79,6 @@ pub struct App {
     pub extended_log: bool,
 
     tx_command: mpsc::Sender<Command>,
-    tx_event: mpsc::Sender<Event>,
     focused: Widget,
     modal: Widget,
     pub input: Option<InputMode>,
@@ -89,7 +88,6 @@ impl App {
     pub fn new(
         user: proto::UserInfo,
         tx_command: mpsc::Sender<Command>,
-        tx_event: mpsc::Sender<Event>,
         extended_log: bool,
     ) -> Self {
         let need_user_info = user.name.is_empty() && user.short_name.is_empty();
@@ -101,6 +99,9 @@ impl App {
         let input = if need_user_info {
             Some(InputMode::new_user_info())
         } else {
+            if let Err(e) = tx_command.blocking_send(Command::Register(user.clone())) {
+                error!("failed to send command to register: {}", e);
+            }
             None
         };
         App {
@@ -120,7 +121,6 @@ impl App {
             },
             extended_log,
             tx_command,
-            tx_event,
             focused: Widget::Chats,
             modal,
             input,
@@ -239,8 +239,13 @@ impl App {
                         InputResult::UserInfo => {
                             if let Ok(info) = input.text.parse::<proto::UserInfo>() {
                                 self.user_description = format!("{}", &info);
-                                self.user.name = info.name;
-                                self.user.short_name = info.short_name;
+                                self.user.name = info.name.clone();
+                                self.user.short_name = info.short_name.clone();
+                                if let Err(e) =
+                                    self.tx_command.blocking_send(Command::Register(info))
+                                {
+                                    error!("failed to send command to register: {}", e);
+                                }
                             } else {
                                 // remaining modal state of input
                                 return;
@@ -281,7 +286,7 @@ impl App {
     pub fn on_key(&mut self, c: char, ctrl: bool, alt: bool) {
         // exit in any modal widget
         if ctrl && c == 'q' {
-            if let Err(e) = self.tx_event.blocking_send(Event::Exit) {
+            if let Err(e) = self.tx_command.blocking_send(Command::Exit) {
                 error!("failed sending Exit command: {}", e);
             }
             return;
@@ -358,12 +363,13 @@ impl App {
                                     }
                                 }
                             }
-                            // Widget::Chats => {
-                            //     // enter (invite yourself) into selected chat
-                            //     if let Some(chat) = self.get_sel_chat() {
-
-                            //     }
-                            // }
+                            Widget::Chats => {
+                                // also create new post
+                                if self.get_sel_chat().is_some() {
+                                    self.modal = Widget::Input;
+                                    self.input = Some(InputMode::new_post());
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -422,12 +428,7 @@ impl App {
         if count == 0 {
             state.select(None);
         } else {
-            state.select(
-                state
-                    .selected()
-                    .and_then(|cur| Some(count.min(cur + 1)))
-                    .or(Some(0)),
-            );
+            state.select(state.selected().map(|cur| count.min(cur + 1)).or(Some(0)));
         }
     }
 
@@ -438,13 +439,7 @@ impl App {
             state.select(
                 state
                     .selected()
-                    .and_then(|cur| {
-                        if cur > 0 {
-                            Some(count.min(cur - 1))
-                        } else {
-                            Some(0)
-                        }
-                    })
+                    .map(|cur| if cur > 0 { count.min(cur - 1) } else { 0 })
                     .or(Some(0)),
             );
         }
@@ -469,12 +464,7 @@ impl App {
     pub fn on_get_invited(&mut self, invitation: proto::Invitation) {
         //todo: ask user about invitation
         if let Some(chat) = self.get_chat(invitation.chat_id) {
-            if chat
-                .users
-                .iter()
-                .find(|&u| *u == self.user.user_id)
-                .is_some()
-            {
+            if chat.users.iter().any(|u| *u == self.user.user_id) {
                 warn!("got invitation while being in that chat");
             }
         }

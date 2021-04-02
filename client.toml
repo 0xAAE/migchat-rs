@@ -1,5 +1,5 @@
-name = "Alexander Avramenko"
-short_name = "0xAAE"
+#name = "Alexander Avramenko"
+#short_name = "0xAAE"
 extended_log = false
 # test_users = [
 #     ["Иван Петров", "ivan"],

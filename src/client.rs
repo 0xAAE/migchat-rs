@@ -132,18 +132,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // launch client
-    let mut client = MigchatClient::new(&settings, rx_command);
+    let mut client = MigchatClient::new(rx_command);
     let exit_flag_copy = exit_flag.clone();
-    let tx_event_copy = tx_event.clone();
     let chat_service = tokio::spawn(async move {
-        let _ = client.launch(tx_event_copy, exit_flag_copy).await;
+        let _ = client.launch(tx_event, exit_flag_copy).await;
         println!("chat service stopped");
     });
 
     // launch UI
     let user = UserInfo {
-        name: settings.get_str("name").unwrap_or(String::new()),
-        short_name: settings.get_str("short_name").unwrap_or(String::new()),
+        name: settings.get_str("name").unwrap_or_default(),
+        short_name: settings.get_str("short_name").unwrap_or_default(),
     };
     let extended_log = settings.get_bool("extended_log").unwrap_or(false);
     tokio::task::block_in_place(move || {
@@ -153,7 +152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let backend = CrosstermBackend::new(stdout);
                 if let Ok(mut terminal) = Terminal::new(backend) {
                     if terminal.clear().is_ok() {
-                        let mut app = ui::App::new(user, tx_command, tx_event, extended_log);
+                        let mut app = ui::App::new(user, tx_command, extended_log);
                         loop {
                             if terminal.draw(|f| ui::draw(f, &mut app)).is_err() {
                                 println!("failed drawing UI");

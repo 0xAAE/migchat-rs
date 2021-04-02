@@ -25,6 +25,11 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
     let selected_style = Style::default().add_modifier(Modifier::BOLD);
+    let users_style = get_style(app.get_state(Widget::Users));
+    let chats_style = get_style(app.get_state(Widget::Chats));
+    let posts_style = get_style(app.get_state(Widget::Posts));
+    let log_style = get_style(app.get_state(Widget::Log));
+    let input_style = get_style(app.get_state(Widget::Input));
     //
     // layout
     //
@@ -70,9 +75,9 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         .collect();
     let users = List::new(users)
         .block(Block::default().borders(Borders::ALL).title("users"))
-        .style(get_style(app.get_state(Widget::Users)))
+        .style(users_style)
         .highlight_symbol("> ")
-        .highlight_style(selected_style.clone());
+        .highlight_style(selected_style);
     f.render_stateful_widget(users, columns[0], &mut app.users_state);
     //
     // chats
@@ -85,13 +90,9 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             let chat_header = if posts_count > 0 {
                 format!("{} ({})", c.description, posts_count)
             } else {
-                format!("{}", c.description)
+                c.description.clone()
             };
-            let mut lines = Vec::new();
-            lines.push(Spans::from(Span::styled(
-                chat_header,
-                get_style(app.get_state(Widget::Chats)),
-            )));
+            let mut lines = vec![Spans::from(Span::styled(chat_header, chats_style))];
             let mut users = String::from("(");
             let mut continue_flag = false;
             for u in &c.users {
@@ -100,28 +101,27 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                 }
                 users.push_str(
                     app.get_user(*u)
-                        .and_then(|u| Some(u.short_name.clone()))
+                        .map(|u| u.short_name.clone())
                         .unwrap_or_else(|| format!("{}", u))
                         .as_str(),
                 );
                 continue_flag = true;
             }
             users.push(')');
-            let users_style =
-                get_style(app.get_state(Widget::Chats)).add_modifier(Modifier::ITALIC);
+            let users_style = chats_style.add_modifier(Modifier::ITALIC);
             if users.len() > 2 {
                 lines.push(Spans::from(Span::styled(users, users_style)));
             } else {
                 lines.push(Spans::from(Span::styled("(empty)", users_style)));
             }
-            ListItem::new(lines).style(get_style(app.get_state(Widget::Chats)))
+            ListItem::new(lines).style(chats_style)
         })
         .collect();
     let chats = List::new(chats)
         .block(Block::default().borders(Borders::ALL).title("select chat"))
-        .style(get_style(app.get_state(Widget::Chats)))
+        .style(chats_style)
         .highlight_symbol("> ")
-        .highlight_style(selected_style.clone());
+        .highlight_style(selected_style);
     f.render_stateful_widget(chats, columns[1], &mut app.chats_state);
     //
     // selected chat content
@@ -134,10 +134,10 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                 ListItem::new(format!(
                     "{}: {}",
                     app.get_user(post.user_id)
-                        .and_then(|u| if u.user_id == app.user.user_id {
-                            Some(String::from("me"))
+                        .map(|u| if u.user_id == app.user.user_id {
+                            String::from("me")
                         } else {
-                            Some(u.short_name.clone())
+                            u.short_name.clone()
                         })
                         .unwrap_or_else(|| format!("{}", post.user_id)),
                     post.text
@@ -158,32 +158,32 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     };
     let content = List::new(content)
         .block(Block::default().borders(Borders::ALL).title(posts_title))
-        .style(get_style(app.get_state(Widget::Posts)))
+        .style(posts_style)
         .highlight_symbol("> ")
-        .highlight_style(selected_style.clone());
+        .highlight_style(selected_style);
     f.render_stateful_widget(content, columns[2], &mut app.posts_state);
     //
     // logger
     //
     if app.extended_log {
         let tui_sm = TuiLoggerSmartWidget::default()
-            .border_style(get_style(app.get_state(Widget::Log)))
+            .border_style(log_style)
             .style_error(Style::default().fg(Color::Red))
             .style_debug(Style::default().fg(Color::Green))
             .style_warn(Style::default().fg(Color::Yellow))
             .style_trace(Style::default().fg(Color::Magenta))
             .style_info(Style::default().fg(Color::Cyan))
-            .state(&mut app.logger_state);
+            .state(&app.logger_state);
         f.render_widget(tui_sm, rows[2]);
     } else {
         let tui_w: TuiLoggerWidget = TuiLoggerWidget::default()
             .block(
                 Block::default()
                     .title("Events viewer")
-                    .border_style(get_style(app.get_state(Widget::Log)))
+                    .border_style(log_style)
                     .borders(Borders::ALL),
             )
-            .style(get_style(app.get_state(Widget::Log)));
+            .style(log_style);
         f.render_widget(tui_w, rows[2]);
     }
     //
@@ -191,11 +191,11 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     //
     if let Some(input) = &app.input {
         let block = Paragraph::new(input.text.as_ref())
-            .style(get_style(app.get_state(Widget::Input)))
+            .style(input_style)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .style(get_style(app.get_state(Widget::Input)))
+                    .style(input_style)
                     .title(input.title.as_str()),
             );
         //let area = Rect::new(columns[1].left() + 5, columns[1].top() + 5, 60, 3);
