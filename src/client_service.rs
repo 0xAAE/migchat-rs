@@ -73,7 +73,7 @@ impl MigchatClient {
                     return Ok(());
                 }
                 _ => {
-                    if exit_flag.load(Ordering::SeqCst) {
+                    if exit_flag.load(Ordering::Relaxed) {
                         info!("exitting before registration info received");
                         return Ok(());
                     }
@@ -119,7 +119,7 @@ impl MigchatClient {
             match tokio::time::timeout(Duration::from_millis(500), self.rx_command.recv()).await {
                 Err(_) => {
                     // timeout, test exit flag and recv commands
-                    if exit_flag.load(Ordering::SeqCst) {
+                    if exit_flag.load(Ordering::Relaxed) {
                         break;
                     }
                 }

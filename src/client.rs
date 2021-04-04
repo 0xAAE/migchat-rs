@@ -124,7 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 last_tick = Instant::now();
             }
-            if exit_flag_copy.load(Ordering::SeqCst) {
+            if exit_flag_copy.load(Ordering::Relaxed) {
                 break;
             }
         }
@@ -202,7 +202,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     },
                                     Event::Exit => {
-                                        exit_flag.store(true, Ordering::SeqCst);
+                                        exit_flag.store(true, Ordering::Relaxed);
                                         break;
                                     }
                                 }

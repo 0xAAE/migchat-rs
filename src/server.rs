@@ -447,7 +447,7 @@ impl ChatRoomService for ChatRoomImpl {
             Vec::new()
         };
         let chat = proto::Chat {
-            chat_id: self.next_chat_id.fetch_add(1, Ordering::SeqCst),
+            chat_id: self.next_chat_id.fetch_add(1, Ordering::AcqRel),
             permanent: info.permanent,
             description: info.description.clone(),
             users,
