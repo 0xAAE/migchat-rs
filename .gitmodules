@@ -1,0 +1,3 @@
+[submodule "third-party/migchat-proto"]
+	path = third-party/migchat-proto
+	url = https://github.com/0xAAE/migchat-proto.git
