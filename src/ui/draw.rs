@@ -86,7 +86,7 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         .chats
         .values()
         .map(|c| {
-            let posts_count = app.get_posts_count(c.chat_id);
+            let posts_count = app.get_posts_count(c.id);
             let chat_header = if posts_count > 0 {
                 format!("{} ({})", c.description, posts_count)
             } else {
@@ -129,13 +129,13 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let content: Vec<ListItem> = if let Some(chat) = app.get_sel_chat() {
         app.posts
             .iter()
-            .filter(|post| post.chat_id == chat.chat_id)
+            .filter(|post| post.chat_id == chat.id)
             .map(|post| {
                 ListItem::new(Spans::from(vec![
                     Span::styled(
                         app.get_user(post.user_id)
                             .map(|u| {
-                                if u.user_id == app.user.user_id {
+                                if u.id == app.user.id {
                                     String::from("me")
                                 } else {
                                     u.short_name.clone()
@@ -155,7 +155,7 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         format!(
             "{} ({})",
             chat.description.clone(),
-            app.get_posts_count(chat.chat_id)
+            app.get_posts_count(chat.id)
         )
     } else {
         String::from("No chat selected")

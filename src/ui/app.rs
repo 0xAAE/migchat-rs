@@ -1,4 +1,4 @@
-use crate::proto::{self, ChatId, UserId};
+use crate::proto::{self, ChatId, UserId, NOT_USER_ID};
 use crate::Command;
 use log::{error, warn};
 use std::collections::HashMap;
@@ -116,7 +116,7 @@ impl App {
             logger_state: TuiWidgetState::new(),
             user_description: format!("{}", user),
             user: proto::User {
-                user_id: 0,
+                id: NOT_USER_ID,
                 name: user.name,
                 short_name: user.short_name,
             },
@@ -208,11 +208,11 @@ impl App {
                         InputResult::NewChat => {
                             let mut desired_users = Vec::new();
                             if let Some(user) = self.get_sel_user() {
-                                desired_users.push(user.user_id);
+                                desired_users.push(user.id);
                             }
                             if let Err(e) = self.tx_command.blocking_send(Command::CreateChat(
                                 proto::ChatInfo {
-                                    user_id: self.user.user_id,
+                                    user_id: self.user.id,
                                     permanent: true,
                                     auto_enter: true,
                                     description: input.text.clone(),
@@ -224,10 +224,11 @@ impl App {
                         }
                         InputResult::NewPost => {
                             if let Some(chat) = self.get_sel_chat() {
-                                let chat_id = chat.chat_id;
+                                let chat_id = chat.id;
                                 if let Err(e) =
                                     self.tx_command.blocking_send(Command::Post(proto::Post {
-                                        user_id: self.user.user_id,
+                                        id: proto::NOT_POST_ID,
+                                        user_id: self.user.id,
                                         chat_id,
                                         text: input.text.clone(),
                                         attachments: Vec::new(),
@@ -357,9 +358,9 @@ impl App {
                                     if let Some(chat) = self.get_sel_chat() {
                                         if let Err(e) = self.tx_command.blocking_send(
                                             Command::Invite(proto::Invitation {
-                                                chat_id: chat.chat_id,
-                                                from_user_id: self.user.user_id,
-                                                to_user_id: user.user_id,
+                                                chat_id: chat.id,
+                                                from_user_id: self.user.id,
+                                                to_user_id: user.id,
                                             }),
                                         ) {
                                             error!(
@@ -420,10 +421,10 @@ impl App {
     }
 
     pub fn get_user(&self, user_id: UserId) -> Option<&proto::User> {
-        if self.user.user_id == user_id {
+        if self.user.id == user_id {
             Some(&self.user)
         } else {
-            self.users.iter().find(|u| u.user_id == user_id)
+            self.users.iter().find(|u| u.id == user_id)
         }
     }
 
@@ -455,23 +456,23 @@ impl App {
     // chat events handling
 
     pub fn on_registered(&mut self, user_id: UserId) {
-        self.user.user_id = user_id;
+        self.user.id = user_id;
     }
 
     pub fn on_user_entered(&mut self, user: proto::User) {
-        if !self.users.iter().any(|u| u.user_id == user.user_id) {
+        if !self.users.iter().any(|u| u.id == user.id) {
             self.users.push(user);
         }
     }
 
     pub fn on_chat_updated(&mut self, chat: proto::Chat) {
-        let _prev = self.chats.insert(chat.chat_id, chat);
+        let _prev = self.chats.insert(chat.id, chat);
     }
 
     pub fn on_get_invited(&mut self, invitation: proto::Invitation) {
         //todo: ask user about invitation
         if let Some(chat) = self.get_chat(invitation.chat_id) {
-            if chat.users.iter().any(|u| *u == self.user.user_id) {
+            if chat.users.iter().any(|u| *u == self.user.id) {
                 warn!("got invitation while being in that chat");
             }
         }
@@ -493,7 +494,7 @@ impl App {
     }
 
     pub fn on_user_gone(&mut self, user_id: UserId) {
-        self.users.retain(|u| u.user_id != user_id);
+        self.users.retain(|u| u.id != user_id);
     }
 }
 

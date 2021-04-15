@@ -228,7 +228,7 @@ impl MigchatClient {
                         for user in update_users.gone {
                             debug!("user exited: {:?}", &user);
                             if let Err(e) = tx_event
-                                .send(Event::Client(ChatRoomEvent::UserGone(user.user_id)))
+                                .send(Event::Client(ChatRoomEvent::UserGone(user.id)))
                                 .await
                             {
                                 error!("failed to transfer exited user: {}", e);
@@ -327,7 +327,7 @@ impl MigchatClient {
                         for chat in updated_chats.gone {
                             debug!("chat has gone: {:?}", &chat);
                             if let Err(e) = tx_event
-                                .send(Event::Client(ChatRoomEvent::ChatDeleted(chat.chat_id)))
+                                .send(Event::Client(ChatRoomEvent::ChatDeleted(chat.id)))
                                 .await
                             {
                                 error!("failed to transfer deleted chat: {}", e);

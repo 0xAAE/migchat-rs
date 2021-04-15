@@ -2,17 +2,20 @@ use std::{
     error::Error,
     fmt::{self, Display},
     str::FromStr,
-    sync::atomic,
 };
 
 tonic::include_proto!("migchat"); // The string specified here must match the proto package name
 
-pub type ChatId = u32;
+pub type ChatId = u64;
 pub type UserId = u64;
+pub type PostId = u64;
+
 #[allow(dead_code)]
-pub type AtomicChatId = atomic::AtomicU32;
+pub const NOT_USER_ID: UserId = 0;
 #[allow(dead_code)]
-pub type AtomicUserId = atomic::AtomicU64;
+pub const NOT_CHAT_ID: ChatId = 0;
+#[allow(dead_code)]
+pub const NOT_POST_ID: PostId = 0;
 
 impl Display for UserInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

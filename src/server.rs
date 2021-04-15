@@ -7,7 +7,7 @@ use std::{
     hash::Hasher,
     ops::Deref,
     pin::Pin,
-    sync::{atomic::Ordering, Arc, RwLock},
+    sync::{Arc, RwLock},
 };
 use tokio::sync::mpsc;
 use tonic::{transport::Server, Request, Response, Status};
@@ -17,24 +17,39 @@ mod proto;
 
 use proto::chat_room_service_server::{ChatRoomService, ChatRoomServiceServer};
 use proto::{
-    AtomicChatId, Chat, ChatId, ChatInfo, ChatReference, Invitation, Post, Registration,
-    Result as RpcResult, UpdateChats, UpdateUsers, User, UserId, UserInfo,
+    Chat, ChatId, ChatInfo, ChatReference, Invitation, Post, Registration, Result as RpcResult,
+    UpdateChats, UpdateUsers, User, UserId, UserInfo, NOT_CHAT_ID, NOT_POST_ID,
 };
 
-fn hash64(user: &UserInfo) -> u64 {
+fn get_user_id(user: &UserInfo) -> u64 {
     let mut hasher = FxHasher64::default();
     hasher.write(user.name.as_bytes());
     hasher.write(user.short_name.as_bytes());
     hasher.finish()
 }
 
+fn new_post_id() -> u64 {
+    let mut v = NOT_POST_ID;
+    while v == NOT_POST_ID {
+        v = rand::random();
+    }
+    v
+}
+
+fn new_chat_id() -> u64 {
+    let mut v = NOT_CHAT_ID;
+    while v == NOT_CHAT_ID {
+        v = rand::random();
+    }
+    v
+}
+
 #[derive(Debug, Default)]
 pub struct ChatRoomImpl {
-    next_chat_id: AtomicChatId,
     // user_id -> user info:
     users: RwLock<HashMap<UserId, User>>,
     // chat_id -> chat info:
-    chats: RwLock<HashMap<ChatId, proto::Chat>>,
+    chats: RwLock<HashMap<ChatId, Chat>>,
     //
     // listeners, all are linked to the appropriate user_id
     //
@@ -94,7 +109,7 @@ impl ChatRoomImpl {
     }
 
     async fn notify_new_post(&self, post: Post) {
-        // найти чат по id, запомнить список user_id-получателей - всех участников, кроме автора поста
+        // найти чат по id, запомнить список user_id-получателей - всех участников, включая автора поста
         let mut users = Vec::new();
         if let Ok(chats) = self.chats.read() {
             if let Some(chat) = chats.get(&post.chat_id) {
@@ -117,7 +132,7 @@ impl ChatRoomImpl {
                 }
             }
         }
-        // подготовит пост и разослать
+        // подготовить пост и разослать
         if !send_list.is_empty() {
             let send_post = Arc::new(post);
             for tx in send_list {
@@ -136,16 +151,16 @@ impl ChatRoomService for ChatRoomImpl {
     async fn register(&self, request: Request<UserInfo>) -> Result<Response<Registration>, Status> {
         debug!("register(): {:?}", &request);
         let user_info = request.into_inner();
-        let user_id = hash64(&user_info);
+        let id = get_user_id(&user_info);
         let new_user = User {
-            user_id,
+            id,
             name: user_info.name,
             short_name: user_info.short_name,
         };
         self.notify_user_entered(new_user.clone()).await;
         if let Ok(mut locked) = self.users.write() {
-            let _ = locked.insert(user_id, new_user);
-            Ok(Response::new(Registration { user_id }))
+            let _ = locked.insert(id, new_user);
+            Ok(Response::new(Registration { user_id: id }))
         } else {
             Err(tonic::Status::internal("no access to registration info"))
         }
@@ -165,6 +180,16 @@ impl ChatRoomService for ChatRoomImpl {
         let user_id = request.into_inner().user_id;
         let (listener, notifier) = mpsc::channel(4);
         if let Ok(mut listeners) = self.invitations_listeners.write() {
+            // test alive
+            listeners.retain(|k, v| {
+                if v.is_closed() {
+                    debug!("stop streaming invitations to {}", k);
+                    false
+                } else {
+                    true
+                }
+            });
+            // add new
             listeners.insert(user_id, listener);
         } else {
             return Err(tonic::Status::internal("no access to invitation channel"));
@@ -195,26 +220,31 @@ impl ChatRoomService for ChatRoomImpl {
         debug!("logout(): {:?}", &request);
         let user_id = request.into_inner().user_id;
         if let Ok(mut listeners) = self.users_listeners.write() {
+            debug!("stop streaming usrs to {}", user_id);
             let _ = listeners.remove(&user_id);
         } else {
             error!("failed locking users listeners (logout)");
         }
         if let Ok(mut listeners) = self.chats_listeners.write() {
+            debug!("stop streaming chats to {}", user_id);
             let _ = listeners.remove(&user_id);
         } else {
             error!("failed locking chats listeners (logout)");
         }
         if let Ok(mut listeners) = self.invitations_listeners.write() {
+            debug!("stop streaming invitations to {}", user_id);
             let _ = listeners.remove(&user_id);
         } else {
             error!("failed locking invitations listeners (logout)");
         }
         if let Ok(mut listeners) = self.posts_listeners.write() {
+            debug!("stop streaming posts to {}", user_id);
             let _ = listeners.remove(&user_id);
         } else {
             error!("failed locking posts listeners (logout)");
         }
         if let Ok(mut users) = self.users.write() {
+            debug!("forget user {} until registers again", user_id);
             let _ = users.remove(&user_id);
         } else {
             error!("failed locking users (logout)");
@@ -239,6 +269,16 @@ impl ChatRoomService for ChatRoomImpl {
         let user_id = request.into_inner().user_id;
         let (listener, notifier) = mpsc::channel::<Arc<Post>>(4);
         if let Ok(mut listeners) = self.posts_listeners.write() {
+            // test alive
+            listeners.retain(|k, v| {
+                if v.is_closed() {
+                    debug!("stop streaming posts to {}", k);
+                    false
+                } else {
+                    true
+                }
+            });
+            // add new
             listeners.insert(user_id, listener);
         } else {
             return Err(tonic::Status::internal("no access to posts listeners"));
@@ -296,6 +336,16 @@ impl ChatRoomService for ChatRoomImpl {
         let user_id = request.into_inner().user_id;
         let (listener, notifier) = mpsc::channel::<Arc<User>>(4);
         if let Ok(mut listeners) = self.users_listeners.write() {
+            // test alive
+            listeners.retain(|k, v| {
+                if v.is_closed() {
+                    debug!("stop streaming users to {}", k);
+                    false
+                } else {
+                    true
+                }
+            });
+            // add new
             listeners.insert(user_id, listener);
         } else {
             return Err(tonic::Status::internal("no access to users listeners"));
@@ -304,7 +354,7 @@ impl ChatRoomService for ChatRoomImpl {
         let mut existing = Vec::new();
         if let Ok(users) = self.users.read() {
             for user in users.values() {
-                if user.user_id != user_id {
+                if user.id != user_id {
                     existing.push(user.clone());
                 }
             }
@@ -364,6 +414,16 @@ impl ChatRoomService for ChatRoomImpl {
         let user_id = request.into_inner().user_id;
         let (listener, notifier) = mpsc::channel::<Arc<Chat>>(4);
         if let Ok(mut listeners) = self.chats_listeners.write() {
+            // test alive
+            listeners.retain(|k, v| {
+                if v.is_closed() {
+                    debug!("stop streaming chats to {}", k);
+                    false
+                } else {
+                    true
+                }
+            });
+            // add new
             listeners.insert(user_id, listener);
         } else {
             // failed locking listeners
@@ -424,7 +484,14 @@ impl ChatRoomService for ChatRoomImpl {
         request: tonic::Request<Post>,
     ) -> Result<tonic::Response<RpcResult>, tonic::Status> {
         debug!("create_post(): {:?}", &request);
-        let post = request.into_inner();
+        let mut post = request.into_inner();
+        if post.id != NOT_POST_ID {
+            return Err(tonic::Status::invalid_argument(format!(
+                "id must be {}",
+                NOT_POST_ID
+            )));
+        }
+        post.id = new_post_id();
         self.notify_new_post(post).await;
         Ok(Response::new(RpcResult {
             ok: true,
@@ -447,13 +514,13 @@ impl ChatRoomService for ChatRoomImpl {
             Vec::new()
         };
         let chat = proto::Chat {
-            chat_id: self.next_chat_id.fetch_add(1, Ordering::AcqRel),
+            id: new_chat_id(),
             permanent: info.permanent,
             description: info.description.clone(),
             users,
         };
         if let Ok(mut chats) = self.chats.write() {
-            chats.insert(chat.chat_id, chat.clone());
+            chats.insert(chat.id, chat.clone());
         } else {
             return Err(tonic::Status::internal("failed to access chats"));
         }
