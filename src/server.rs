@@ -205,7 +205,7 @@ impl ChatRoomService for ChatRoomImpl {
                     break;
                 }
             }
-            debug!("stop streaming invitations to {}", user_id);
+            debug!("stream of invitations to {} has stopped", user_id);
         });
         Ok(Response::new(Box::pin(
             tokio_stream::wrappers::ReceiverStream::new(rx),
@@ -220,32 +220,37 @@ impl ChatRoomService for ChatRoomImpl {
         debug!("logout(): {:?}", &request);
         let user_id = request.into_inner().user_id;
         if let Ok(mut listeners) = self.users_listeners.write() {
-            debug!("stop streaming usrs to {}", user_id);
-            let _ = listeners.remove(&user_id);
+            if listeners.remove(&user_id).is_some() {
+                debug!("stop streaming users to {}", user_id);
+            }
         } else {
             error!("failed locking users listeners (logout)");
         }
         if let Ok(mut listeners) = self.chats_listeners.write() {
-            debug!("stop streaming chats to {}", user_id);
-            let _ = listeners.remove(&user_id);
+            if listeners.remove(&user_id).is_some() {
+                debug!("stop streaming chats to {}", user_id);
+            }
         } else {
             error!("failed locking chats listeners (logout)");
         }
         if let Ok(mut listeners) = self.invitations_listeners.write() {
-            debug!("stop streaming invitations to {}", user_id);
-            let _ = listeners.remove(&user_id);
+            if listeners.remove(&user_id).is_some() {
+                debug!("stop streaming invitations to {}", user_id);
+            }
         } else {
             error!("failed locking invitations listeners (logout)");
         }
         if let Ok(mut listeners) = self.posts_listeners.write() {
-            debug!("stop streaming posts to {}", user_id);
-            let _ = listeners.remove(&user_id);
+            if listeners.remove(&user_id).is_some() {
+                debug!("stop streaming posts to {}", user_id);
+            }
         } else {
             error!("failed locking posts listeners (logout)");
         }
         if let Ok(mut users) = self.users.write() {
-            debug!("forget user {} until registers again", user_id);
-            let _ = users.remove(&user_id);
+            if users.remove(&user_id).is_some() {
+                debug!("forget user {} until registers again", user_id);
+            }
         } else {
             error!("failed locking users (logout)");
         }
@@ -315,7 +320,7 @@ impl ChatRoomService for ChatRoomImpl {
                     break;
                 }
             }
-            debug!("stop streaming posts to {}", user_id);
+            debug!("stream of posts to {} has stopped", user_id);
         });
         // start streaming activity, data consumer
         Ok(Response::new(Box::pin(
@@ -393,7 +398,7 @@ impl ChatRoomService for ChatRoomImpl {
                     break;
                 }
             }
-            debug!("stop streaming users to {}", user_id);
+            debug!("stream of users to {} has stopped", user_id);
         });
         // start streaming activity, data consumer
         Ok(Response::new(Box::pin(
