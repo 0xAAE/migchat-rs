@@ -3,7 +3,7 @@ use futures::Stream; //, StreamExt};
 use fxhash::FxHasher64;
 use log::{debug, error, info};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     hash::Hasher,
     ops::Deref,
     pin::Pin,
@@ -42,6 +42,27 @@ fn new_chat_id() -> u64 {
         v = rand::random();
     }
     v
+}
+
+// chat must have a predictable reproducable id
+// based on its description if is not empty or its members,
+// the reasons are
+// - avoid having chats with empty names in chat list
+// - display such a chat like a dialog of its members
+// - chat must be discoverable by any member instead of creating new and new ones
+fn get_chat_id(description: &str, users: &[UserId]) -> u64 {
+    let mut hasher = FxHasher64::default();
+    if !description.is_empty() {
+        hasher.write(description.as_bytes());
+        hasher.finish()
+    } else if !users.is_empty() {
+        for id in users {
+            hasher.write(&id.to_le_bytes());
+        }
+        hasher.finish()
+    } else {
+        new_chat_id()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -512,23 +533,52 @@ impl ChatRoomService for ChatRoomImpl {
         debug!("create_chat(): {:?}", &request);
         let info = request.get_ref();
         let users = if info.auto_enter {
-            let mut tmp = vec![info.user_id];
-            tmp.extend_from_slice(info.desired_users.as_slice());
-            tmp
+            // filter out duplicated users
+            let mut tmp = HashSet::with_capacity(info.desired_users.len() + 1);
+            tmp.insert(info.user_id);
+            for u in &info.desired_users {
+                tmp.insert(*u);
+            }
+            tmp.drain().collect()
         } else {
             Vec::new()
         };
-        let chat = proto::Chat {
-            id: new_chat_id(),
-            permanent: info.permanent,
-            description: info.description.clone(),
-            users,
-        };
-        if let Ok(mut chats) = self.chats.write() {
-            chats.insert(chat.id, chat.clone());
+        let id = get_chat_id(&info.description, &users);
+        // test chat exists
+        let mut flag_auto_enter = false;
+        if let Ok(chats) = self.chats.read() {
+            if let Some((_, chat)) = chats.get_key_value(&id) {
+                if !info.auto_enter || chat.users.contains(&info.user_id) {
+                    return Ok(Response::new(chat.clone()));
+                } else {
+                    flag_auto_enter = true;
+                }
+            }
         } else {
+            error!("fatal, failed to access chats");
             return Err(tonic::Status::internal("failed to access chats"));
         }
+        // create new chat or update existing with new member
+        let chat = if let Ok(mut chats) = self.chats.write() {
+            if let Some(chat) = chats.get_mut(&id) {
+                if flag_auto_enter {
+                    chat.users.push(info.user_id);
+                }
+                chat.clone()
+            } else {
+                let chat = proto::Chat {
+                    id,
+                    permanent: info.permanent,
+                    description: info.description.clone(),
+                    users,
+                };
+                chats.insert(chat.id, chat.clone());
+                chat
+            }
+        } else {
+            error!("fatal, failed to access chats");
+            return Err(tonic::Status::internal("failed to access chats"));
+        };
         self.notify_chat_updated(chat.clone()).await;
         Ok(Response::new(chat))
     }
