@@ -1,11 +1,16 @@
+use bytes::BytesMut;
 use env_logger::{fmt::TimestampPrecision, Builder, Env, Target};
 use futures::Stream; //, StreamExt};
 use fxhash::FxHasher64;
+use jammdb::{self, Data};
 use log::{debug, error, info};
+use prost::Message;
 use std::{
     collections::{HashMap, HashSet},
+    fmt,
     hash::Hasher,
     ops::Deref,
+    path::Path,
     pin::Pin,
     sync::{Arc, RwLock},
 };
@@ -13,7 +18,6 @@ use tokio::sync::mpsc;
 use tonic::{transport::Server, Request, Response, Status};
 
 mod proto;
-//mod user;
 
 use proto::chat_room_service_server::{ChatRoomService, ChatRoomServiceServer};
 use proto::{
@@ -65,10 +69,14 @@ fn get_chat_id(description: &str, users: &[UserId]) -> u64 {
     }
 }
 
-#[derive(Debug, Default)]
+const BUCKET_USERS: &str = "users";
+const BUCKET_CHATS: &str = "chats";
+const BUCKET_POSTS: &str = "posts";
+
 pub struct ChatRoomImpl {
+    db: jammdb::DB,
     // user_id -> user info:
-    users: RwLock<HashMap<UserId, User>>,
+    // users: RwLock<HashMap<UserId, User>>,
     // chat_id -> chat info:
     chats: RwLock<HashMap<ChatId, Chat>>,
     //
@@ -85,6 +93,111 @@ pub struct ChatRoomImpl {
 }
 
 impl ChatRoomImpl {
+    fn new<P: AsRef<Path>>(db_file: P) -> Result<Self, Box<dyn std::error::Error>> {
+        let db = jammdb::DB::open(db_file)?;
+        // create users bucket in DB if not exists
+        let tx = db.tx(true)?;
+        match tx.create_bucket(BUCKET_USERS) {
+            Ok(_) => {}
+            Err(jammdb::Error::BucketExists) => {}
+            Err(e) => return Err(format!("{}", e).into()),
+        }
+        tx.commit()?;
+        // create chats bucket in DB if not exists
+        let tx = db.tx(true)?;
+        match tx.create_bucket(BUCKET_CHATS) {
+            Ok(_) => {}
+            Err(jammdb::Error::BucketExists) => {}
+            Err(e) => return Err(format!("{}", e).into()),
+        }
+        tx.commit()?;
+        // create posts bucket in DB if not exists
+        let tx = db.tx(true)?;
+        match tx.create_bucket(BUCKET_POSTS) {
+            Ok(_) => {}
+            Err(jammdb::Error::BucketExists) => {}
+            Err(e) => return Err(format!("{}", e).into()),
+        }
+        tx.commit()?;
+
+        Ok(Self {
+            db,
+            chats: RwLock::new(HashMap::new()),
+            users_listeners: RwLock::new(HashMap::new()),
+            invitations_listeners: RwLock::new(HashMap::new()),
+            chats_listeners: RwLock::new(HashMap::new()),
+            posts_listeners: RwLock::new(HashMap::new()),
+        })
+    }
+
+    fn read_user(&self, id: UserId) -> Result<Option<proto::User>, Box<dyn std::error::Error>> {
+        match self.db.tx(false) {
+            Ok(tx) => match tx.get_bucket(BUCKET_USERS) {
+                Ok(bucket) => match bucket.get(id.to_le_bytes()) {
+                    None => Ok(None),
+                    Some(record) => {
+                        let bin = record.kv().value();
+                        match proto::User::decode(bin) {
+                            Ok(user) => Ok(Some(user)),
+                            Err(e) => {
+                                error!("protobuf parse, {}", e);
+                                Err(e.into())
+                            }
+                        }
+                    }
+                },
+                Err(e) => Err(e.into()),
+            },
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn write_user(&self, user: proto::User) -> Result<(), Box<dyn std::error::Error>> {
+        match self.db.tx(true) {
+            Ok(tx) => match tx.get_bucket(BUCKET_USERS) {
+                Ok(bucket) => {
+                    let mut buf = BytesMut::new();
+                    match user.encode(&mut buf) {
+                        Ok(_) => match bucket.put(user.id.to_le_bytes(), buf) {
+                            Ok(_) => Ok(()),
+                            Err(e) => Err(e.into()),
+                        },
+                        Err(e) => Err(e.into()),
+                    }
+                }
+                Err(e) => Err(e.into()),
+            },
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn read_all_users(&self) -> Result<Vec<proto::User>, Box<dyn std::error::Error>> {
+        match self.db.tx(false) {
+            Ok(tx) => match tx.get_bucket(BUCKET_USERS) {
+                Ok(bucket) => {
+                    let mut users = Vec::new();
+                    for data in bucket.cursor() {
+                        match &*data {
+                            Data::Bucket(_) => {
+                                error!("internal error, BUCKET_USERS contains child bucket")
+                            }
+                            Data::KeyValue(kv) => {
+                                let bin = kv.value();
+                                match proto::User::decode(bin) {
+                                    Ok(user) => users.push(user),
+                                    Err(e) => error!("internal error, {}", e),
+                                }
+                            }
+                        }
+                    }
+                    Ok(users)
+                }
+                Err(e) => Err(e.into()),
+            },
+            Err(e) => Err(e.into()),
+        }
+    }
+
     async fn notify_chat_updated(&self, chat: Chat) {
         let mut send_list = Vec::new();
         if let Ok(listeners) = self.chats_listeners.read() {
@@ -166,6 +279,20 @@ impl ChatRoomImpl {
     }
 }
 
+impl fmt::Debug for ChatRoomImpl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChatRoomImpl")
+            .field("users_listeners", &format!("{:?}", self.users_listeners))
+            .field(
+                "invitations_listeners",
+                &format!("{:?}", self.invitations_listeners),
+            )
+            .field("chats_listeners", &format!("{:?}", self.chats_listeners))
+            .field("posts_listeners", &format!("{:?}", self.posts_listeners))
+            .finish()
+    }
+}
+
 #[tonic::async_trait]
 impl ChatRoomService for ChatRoomImpl {
     #[doc = " Sends a reqistration request"]
@@ -173,17 +300,27 @@ impl ChatRoomService for ChatRoomImpl {
         debug!("register(): {:?}", &request);
         let user_info = request.into_inner();
         let id = get_user_id(&user_info);
+        // test existing
+        match self.read_user(id) {
+            Err(e) => return Err(tonic::Status::internal(format!("{}", e))),
+            Ok(opt) => {
+                if let Some(u) = opt {
+                    debug!("{} ({}) already registered", u.short_name, u.name);
+                    return Ok(Response::new(Registration { user_id: id }));
+                }
+            }
+        }
         let new_user = User {
             id,
             name: user_info.name,
             short_name: user_info.short_name,
         };
+        // store new user
         self.notify_user_entered(new_user.clone()).await;
-        if let Ok(mut locked) = self.users.write() {
-            let _ = locked.insert(id, new_user);
-            Ok(Response::new(Registration { user_id: id }))
+        if let Err(e) = self.write_user(new_user) {
+            Err(tonic::Status::internal(format!("{}", e)))
         } else {
-            Err(tonic::Status::internal("no access to registration info"))
+            Ok(Response::new(Registration { user_id: id }))
         }
     }
 
@@ -267,13 +404,6 @@ impl ChatRoomService for ChatRoomImpl {
             }
         } else {
             error!("failed locking posts listeners (logout)");
-        }
-        if let Ok(mut users) = self.users.write() {
-            if users.remove(&user_id).is_some() {
-                debug!("forget user {} until registers again", user_id);
-            }
-        } else {
-            error!("failed locking users (logout)");
         }
         self.notify_user_gone(user_id).await;
         Ok(Response::new(RpcResult {
@@ -378,8 +508,8 @@ impl ChatRoomService for ChatRoomImpl {
         }
         // collect existing users
         let mut existing = Vec::new();
-        if let Ok(users) = self.users.read() {
-            for user in users.values() {
+        if let Ok(users) = self.read_all_users() {
+            for user in users {
                 if user.id != user_id {
                     existing.push(user.clone());
                 }
@@ -602,15 +732,16 @@ impl ChatRoomService for ChatRoomImpl {
             return Err(tonic::Status::internal("failed read chats"));
         }
         // test recepient exists
-        if let Ok(users) = self.users.read() {
-            if !users.contains_key(&invitation.to_user_id) {
-                return Err(tonic::Status::not_found(format!(
-                    "{} is not registered",
-                    invitation.to_user_id
-                )));
+        match self.read_user(invitation.to_user_id) {
+            Err(e) => return Err(tonic::Status::internal(format!("{}", e))),
+            Ok(opt) => {
+                if opt.is_none() {
+                    return Err(tonic::Status::not_found(format!(
+                        "user {} is not registered",
+                        invitation.to_user_id
+                    )));
+                }
             }
-        } else {
-            return Err(tonic::Status::internal("failed read users"));
         }
         // try to get send channel and send invitation
         let tx = if let Ok(listeners) = self.invitations_listeners.read() {
@@ -711,7 +842,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let addr = "0.0.0.0:50051".parse().unwrap();
-    let chat_room = ChatRoomImpl::default();
+    let chat_room = ChatRoomImpl::new("migchat_server.db")?;
     info!("Chat room is listening on {}", addr);
 
     let svc = ChatRoomServiceServer::new(chat_room);
