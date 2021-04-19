@@ -1,4 +1,5 @@
 /target
 /.vscode
 *.sh
+migchat_server.db
 client*.toml

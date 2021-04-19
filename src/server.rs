@@ -159,7 +159,7 @@ impl ChatRoomImpl {
                     let mut buf = BytesMut::new();
                     match user.encode(&mut buf) {
                         Ok(_) => match bucket.put(user.id.to_le_bytes(), buf) {
-                            Ok(_) => Ok(()),
+                            Ok(_) => tx.commit().map_err(|e| e.into()),
                             Err(e) => Err(e.into()),
                         },
                         Err(e) => Err(e.into()),
