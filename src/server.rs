@@ -130,15 +130,19 @@ impl ChatRoomImpl {
         })
     }
 
-    fn read_user(&self, id: UserId) -> Result<Option<proto::User>, Box<dyn std::error::Error>> {
+    fn read_from_db<M: Message + Default>(
+        &self,
+        bucket_name: &str,
+        id: &[u8],
+    ) -> Result<Option<M>, Box<dyn std::error::Error>> {
         match self.db.tx(false) {
-            Ok(tx) => match tx.get_bucket(BUCKET_USERS) {
-                Ok(bucket) => match bucket.get(id.to_le_bytes()) {
+            Ok(tx) => match tx.get_bucket(bucket_name) {
+                Ok(bucket) => match bucket.get(id) {
                     None => Ok(None),
                     Some(record) => {
                         let bin = record.kv().value();
-                        match proto::User::decode(bin) {
-                            Ok(user) => Ok(Some(user)),
+                        match M::decode(bin) {
+                            Ok(item) => Ok(Some(item)),
                             Err(e) => {
                                 error!("protobuf parse, {}", e);
                                 Err(e.into())
@@ -152,13 +156,18 @@ impl ChatRoomImpl {
         }
     }
 
-    fn write_user(&self, user: proto::User) -> Result<(), Box<dyn std::error::Error>> {
+    fn write_to_db<M: Message>(
+        &self,
+        bucket_name: &str,
+        id: &[u8],
+        user: M,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         match self.db.tx(true) {
-            Ok(tx) => match tx.get_bucket(BUCKET_USERS) {
+            Ok(tx) => match tx.get_bucket(bucket_name) {
                 Ok(bucket) => {
                     let mut buf = BytesMut::new();
                     match user.encode(&mut buf) {
-                        Ok(_) => match bucket.put(user.id.to_le_bytes(), buf) {
+                        Ok(_) => match bucket.put(id, buf) {
                             Ok(_) => tx.commit().map_err(|e| e.into()),
                             Err(e) => Err(e.into()),
                         },
@@ -171,11 +180,14 @@ impl ChatRoomImpl {
         }
     }
 
-    fn read_all_users(&self) -> Result<Vec<proto::User>, Box<dyn std::error::Error>> {
+    fn read_all_from_db<M: Message + Default>(
+        &self,
+        bucket_name: &str,
+    ) -> Result<Vec<M>, Box<dyn std::error::Error>> {
         match self.db.tx(false) {
-            Ok(tx) => match tx.get_bucket(BUCKET_USERS) {
+            Ok(tx) => match tx.get_bucket(bucket_name) {
                 Ok(bucket) => {
-                    let mut users = Vec::new();
+                    let mut items = Vec::new();
                     for data in bucket.cursor() {
                         match &*data {
                             Data::Bucket(_) => {
@@ -183,14 +195,14 @@ impl ChatRoomImpl {
                             }
                             Data::KeyValue(kv) => {
                                 let bin = kv.value();
-                                match proto::User::decode(bin) {
-                                    Ok(user) => users.push(user),
+                                match M::decode(bin) {
+                                    Ok(user) => items.push(user),
                                     Err(e) => error!("internal error, {}", e),
                                 }
                             }
                         }
                     }
-                    Ok(users)
+                    Ok(items)
                 }
                 Err(e) => Err(e.into()),
             },
@@ -301,7 +313,7 @@ impl ChatRoomService for ChatRoomImpl {
         let user_info = request.into_inner();
         let id = get_user_id(&user_info);
         // test existing
-        match self.read_user(id) {
+        match self.read_from_db::<proto::User>(BUCKET_USERS, &id.to_le_bytes()) {
             Err(e) => return Err(tonic::Status::internal(format!("{}", e))),
             Ok(opt) => {
                 if let Some(u) = opt {
@@ -317,7 +329,7 @@ impl ChatRoomService for ChatRoomImpl {
         };
         // store new user
         self.notify_user_entered(new_user.clone()).await;
-        if let Err(e) = self.write_user(new_user) {
+        if let Err(e) = self.write_to_db(BUCKET_USERS, &new_user.id.to_le_bytes(), new_user) {
             Err(tonic::Status::internal(format!("{}", e)))
         } else {
             Ok(Response::new(Registration { user_id: id }))
@@ -508,7 +520,7 @@ impl ChatRoomService for ChatRoomImpl {
         }
         // collect existing users
         let mut existing = Vec::new();
-        if let Ok(users) = self.read_all_users() {
+        if let Ok(users) = self.read_all_from_db::<proto::User>(BUCKET_USERS) {
             for user in users {
                 if user.id != user_id {
                     existing.push(user.clone());
@@ -732,7 +744,7 @@ impl ChatRoomService for ChatRoomImpl {
             return Err(tonic::Status::internal("failed read chats"));
         }
         // test recepient exists
-        match self.read_user(invitation.to_user_id) {
+        match self.read_from_db::<proto::User>(BUCKET_USERS, &invitation.to_user_id.to_le_bytes()) {
             Err(e) => return Err(tonic::Status::internal(format!("{}", e))),
             Ok(opt) => {
                 if opt.is_none() {
