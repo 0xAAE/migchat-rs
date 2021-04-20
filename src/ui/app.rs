@@ -69,6 +69,7 @@ impl InputMode {
 pub struct App {
     pub title: String,
     pub users: Vec<proto::User>,
+    pub online: Vec<UserId>,
     pub users_state: ListState,
     pub chats: HashMap<ChatId, proto::Chat>,
     pub chats_state: ListState,
@@ -108,6 +109,7 @@ impl App {
         App {
             title: "MiGChat".to_string(),
             users: Vec::new(),
+            online: Vec::new(),
             users_state: ListState::default(),
             chats: HashMap::new(),
             chats_state: ListState::default(),
@@ -459,10 +461,18 @@ impl App {
         self.user.id = user_id;
     }
 
-    pub fn on_user_entered(&mut self, user: proto::User) {
+    pub fn on_user_info(&mut self, user: proto::User) {
         if !self.users.iter().any(|u| u.id == user.id) {
             self.users.push(user);
         }
+    }
+
+    pub fn on_user_entered(&mut self, id: UserId) {
+        self.online.push(id);
+    }
+
+    pub fn on_user_gone(&mut self, id: UserId) {
+        self.online.retain(|item| *item != id);
     }
 
     pub fn on_chat_updated(&mut self, chat: proto::Chat) {
@@ -491,10 +501,6 @@ impl App {
 
     pub fn on_chat_deleted(&mut self, chat_id: ChatId) {
         self.chats.remove(&chat_id);
-    }
-
-    pub fn on_user_gone(&mut self, user_id: UserId) {
-        self.users.retain(|u| u.id != user_id);
     }
 }
 

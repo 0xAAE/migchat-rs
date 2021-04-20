@@ -425,6 +425,20 @@ impl ChatRoomService for ChatRoomImpl {
         } else {
             error!("failed to read existing users");
         }
+        // collect statuses
+        let mut online = Vec::new();
+        let mut offline = Vec::new();
+        if let Ok(online_users) = self.online_users.read() {
+            for u in &existing {
+                if online_users.contains(&u.id) {
+                    online.push(u.id);
+                } else {
+                    offline.push(u.id);
+                }
+            }
+        } else {
+            error!("fatal internal, failed to access users statuses");
+        }
         // start permanent listener that streams data to remote client
         let (tx, rx) = mpsc::channel(4);
         tokio::spawn(async move {
@@ -433,7 +447,8 @@ impl ChatRoomService for ChatRoomImpl {
                 // send existing users
                 let start_update = UpdateUsers {
                     added: existing,
-                    gone: Vec::new(),
+                    online,
+                    offline,
                 };
                 debug!(
                     "sending {} existing users to {}",
@@ -450,7 +465,8 @@ impl ChatRoomService for ChatRoomImpl {
                 debug!("re-translating new user to {}", user_id);
                 let update = UpdateUsers {
                     added: vec![user.deref().clone()],
-                    gone: Vec::new(),
+                    online: vec![user.id],
+                    offline: Vec::new(),
                 };
                 if let Err(e) = tx.send(Ok(update)).await {
                     error!("failed sending users update: {}, stop", e);
