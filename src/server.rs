@@ -79,8 +79,10 @@ pub struct ChatRoomImpl {
     invitations_listeners: RwLock<HashMap<UserId, mpsc::Sender<Invitation>>>,
     // new chats:
     chats_listeners: RwLock<HashMap<UserId, mpsc::Sender<Arc<Chat>>>>,
-    // new posts
+    // new posts:
     posts_listeners: RwLock<HashMap<UserId, mpsc::Sender<Arc<Post>>>>,
+    // users statuses, stores online users:
+    online_users: RwLock<HashSet<UserId>>,
 }
 
 impl ChatRoomImpl {
@@ -93,6 +95,7 @@ impl ChatRoomImpl {
             invitations_listeners: RwLock::new(HashMap::new()),
             chats_listeners: RwLock::new(HashMap::new()),
             posts_listeners: RwLock::new(HashMap::new()),
+            online_users: RwLock::new(HashSet::new()),
         })
     }
 
@@ -196,12 +199,18 @@ impl ChatRoomService for ChatRoomImpl {
         debug!("register(): {:?}", &request);
         let user_info = request.into_inner();
         let id = get_user_id(&user_info);
+        if let Ok(mut online_users) = self.online_users.write() {
+            online_users.insert(id);
+        } else {
+            error!("fatal internal, failed to access online users collection");
+        }
         // test existing
         match self.storage.read_user(id) {
             Err(e) => return Err(tonic::Status::internal(format!("{}", e))),
             Ok(opt) => {
                 if let Some(u) = opt {
                     debug!("{} ({}) already registered", u.short_name, u.name);
+                    self.notify_user_entered(u.clone()).await;
                     return Ok(Response::new(Registration { user_id: id }));
                 }
             }
@@ -300,6 +309,9 @@ impl ChatRoomService for ChatRoomImpl {
             }
         } else {
             error!("failed locking posts listeners (logout)");
+        }
+        if let Ok(mut online_users) = self.online_users.write() {
+            online_users.remove(&user_id);
         }
         self.notify_user_gone(user_id).await;
         Ok(Response::new(RpcResult {
