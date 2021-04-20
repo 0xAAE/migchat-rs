@@ -25,6 +25,8 @@ use proto::{
     UpdateChats, UpdateUsers, User, UserId, UserInfo, NOT_CHAT_ID, NOT_POST_ID,
 };
 
+type InternalError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
 fn get_user_id(user: &UserInfo) -> u64 {
     let mut hasher = FxHasher64::default();
     hasher.write(user.name.as_bytes());
@@ -75,13 +77,6 @@ const BUCKET_POSTS: &str = "posts";
 
 pub struct ChatRoomImpl {
     db: jammdb::DB,
-    // user_id -> user info:
-    // users: RwLock<HashMap<UserId, User>>,
-    // chat_id -> chat info:
-    chats: RwLock<HashMap<ChatId, Chat>>,
-    //
-    // listeners, all are linked to the appropriate user_id
-    //
     // new users:
     users_listeners: RwLock<HashMap<UserId, mpsc::Sender<Arc<User>>>>,
     // new invitations:
@@ -93,7 +88,7 @@ pub struct ChatRoomImpl {
 }
 
 impl ChatRoomImpl {
-    fn new<P: AsRef<Path>>(db_file: P) -> Result<Self, Box<dyn std::error::Error>> {
+    fn new<P: AsRef<Path>>(db_file: P) -> Result<Self, InternalError> {
         let db = jammdb::DB::open(db_file)?;
         // create users bucket in DB if not exists
         let tx = db.tx(true)?;
@@ -122,7 +117,7 @@ impl ChatRoomImpl {
 
         Ok(Self {
             db,
-            chats: RwLock::new(HashMap::new()),
+            // chats: RwLock::new(HashMap::new()),
             users_listeners: RwLock::new(HashMap::new()),
             invitations_listeners: RwLock::new(HashMap::new()),
             chats_listeners: RwLock::new(HashMap::new()),
@@ -134,7 +129,7 @@ impl ChatRoomImpl {
         &self,
         bucket_name: &str,
         id: &[u8],
-    ) -> Result<Option<M>, Box<dyn std::error::Error>> {
+    ) -> Result<Option<M>, InternalError> {
         match self.db.tx(false) {
             Ok(tx) => match tx.get_bucket(bucket_name) {
                 Ok(bucket) => match bucket.get(id) {
@@ -145,14 +140,14 @@ impl ChatRoomImpl {
                             Ok(item) => Ok(Some(item)),
                             Err(e) => {
                                 error!("protobuf parse, {}", e);
-                                Err(e.into())
+                                Err(format!("{}", e).into())
                             }
                         }
                     }
                 },
-                Err(e) => Err(e.into()),
+                Err(e) => Err(format!("{}", e).into()),
             },
-            Err(e) => Err(e.into()),
+            Err(e) => Err(format!("{}", e).into()),
         }
     }
 
@@ -160,13 +155,13 @@ impl ChatRoomImpl {
         &self,
         bucket_name: &str,
         id: &[u8],
-        user: M,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+        item: &M,
+    ) -> Result<(), InternalError> {
         match self.db.tx(true) {
             Ok(tx) => match tx.get_bucket(bucket_name) {
                 Ok(bucket) => {
                     let mut buf = BytesMut::new();
-                    match user.encode(&mut buf) {
+                    match item.encode(&mut buf) {
                         Ok(_) => match bucket.put(id, buf) {
                             Ok(_) => tx.commit().map_err(|e| e.into()),
                             Err(e) => Err(e.into()),
@@ -180,10 +175,56 @@ impl ChatRoomImpl {
         }
     }
 
+    fn update_in_db<M: Message + Default + Clone, F: FnMut(&mut M)>(
+        &self,
+        bucket_name: &str,
+        id: &[u8],
+        mut updater: F,
+    ) -> Result<Option<M>, InternalError> {
+        match self.db.tx(true) {
+            Ok(tx) => match tx.get_bucket(bucket_name) {
+                Ok(bucket) => {
+                    if let Some(kv) = bucket.get_kv(id) {
+                        // read
+                        let bin = kv.value();
+                        match M::decode(bin) {
+                            Ok(item) => {
+                                let mut new_item = item.clone();
+                                // update
+                                updater(&mut new_item);
+                                // serialize
+                                let mut buf = BytesMut::new();
+                                match new_item.encode(&mut buf) {
+                                    Ok(_) => match bucket.put(id, buf) {
+                                        // store into db
+                                        Ok(_) => tx
+                                            .commit()
+                                            .map(|_| Some(new_item))
+                                            .map_err(|e| e.into()),
+                                        Err(e) => Err(e.into()),
+                                    },
+                                    Err(e) => Err(e.into()),
+                                }
+                            }
+                            Err(e) => {
+                                error!("protobuf parse, {}", e);
+                                Err(e.into())
+                            }
+                        }
+                    } else {
+                        Ok(None)
+                    }
+                }
+                Err(e) => Err(e.into()),
+            },
+            Err(e) => Err(e.into()),
+        }
+    }
+
     fn read_all_from_db<M: Message + Default>(
         &self,
         bucket_name: &str,
-    ) -> Result<Vec<M>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<M>, InternalError> {
         match self.db.tx(false) {
             Ok(tx) => match tx.get_bucket(bucket_name) {
                 Ok(bucket) => {
@@ -204,6 +245,25 @@ impl ChatRoomImpl {
                     }
                     Ok(items)
                 }
+                Err(e) => Err(e.into()),
+            },
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn remove_from_db<M: Message>(
+        &self,
+        bucket_name: &str,
+        id: &[u8],
+    ) -> Result<(), InternalError> {
+        // does not require writable tx!
+        // see https://docs.rs/jammdb/0.5.0/jammdb/struct.Bucket.html#method.delete
+        match self.db.tx(false) {
+            Ok(tx) => match tx.get_bucket(bucket_name) {
+                Ok(bucket) => bucket
+                    .delete(id)
+                    .map(|_| ())
+                    .map_err(|e| format!("{}", e).into()),
                 Err(e) => Err(e.into()),
             },
             Err(e) => Err(e.into()),
@@ -257,11 +317,11 @@ impl ChatRoomImpl {
     async fn notify_new_post(&self, post: Post) {
         // найти чат по id, запомнить список user_id-получателей - всех участников, включая автора поста
         let mut users = Vec::new();
-        if let Ok(chats) = self.chats.read() {
-            if let Some(chat) = chats.get(&post.chat_id) {
-                for u in chat.users.as_slice() {
-                    users.push(*u);
-                }
+        if let Ok(Some(chat)) =
+            self.read_from_db::<proto::Chat>(BUCKET_CHATS, &post.chat_id.to_le_bytes())
+        {
+            for u in chat.users.as_slice() {
+                users.push(*u);
             }
         }
         if users.is_empty() {
@@ -329,7 +389,7 @@ impl ChatRoomService for ChatRoomImpl {
         };
         // store new user
         self.notify_user_entered(new_user.clone()).await;
-        if let Err(e) = self.write_to_db(BUCKET_USERS, &new_user.id.to_le_bytes(), new_user) {
+        if let Err(e) = self.write_to_db(BUCKET_USERS, &new_user.id.to_le_bytes(), &new_user) {
             Err(tonic::Status::internal(format!("{}", e)))
         } else {
             Ok(Response::new(Registration { user_id: id }))
@@ -599,8 +659,8 @@ impl ChatRoomService for ChatRoomImpl {
         }
         // collect existing chats
         let mut existing = Vec::new();
-        if let Ok(chats) = self.chats.read() {
-            for chat in chats.values() {
+        if let Ok(chats) = self.read_all_from_db::<proto::Chat>(BUCKET_CHATS) {
+            for chat in chats {
                 existing.push(chat.clone());
             }
         } else {
@@ -686,43 +746,40 @@ impl ChatRoomService for ChatRoomImpl {
             Vec::new()
         };
         let id = get_chat_id(&info.description, &users);
-        // test chat exists
-        let mut flag_auto_enter = false;
-        if let Ok(chats) = self.chats.read() {
-            if let Some((_, chat)) = chats.get_key_value(&id) {
-                if !info.auto_enter || chat.users.contains(&info.user_id) {
-                    return Ok(Response::new(chat.clone()));
-                } else {
-                    flag_auto_enter = true;
-                }
+        // test chat exists and enter the chat if that has not been done before
+        match self.update_in_db::<proto::Chat, _>(BUCKET_CHATS, &id.to_le_bytes(), |chat| {
+            if info.auto_enter && !chat.users.contains(&info.user_id) {
+                chat.users.push(info.user_id);
             }
-        } else {
-            error!("fatal, failed to access chats");
-            return Err(tonic::Status::internal("failed to access chats"));
-        }
-        // create new chat or update existing with new member
-        let chat = if let Ok(mut chats) = self.chats.write() {
-            if let Some(chat) = chats.get_mut(&id) {
-                if flag_auto_enter {
-                    chat.users.push(info.user_id);
-                }
-                chat.clone()
-            } else {
+        }) {
+            Ok(Some(chat)) => {
+                // chat was found & updated if needed
+                self.notify_chat_updated(chat.clone()).await;
+                Ok(Response::new(chat))
+            }
+            Ok(None) => {
+                // chat was not found, add new
                 let chat = proto::Chat {
                     id,
                     permanent: info.permanent,
                     description: info.description.clone(),
                     users,
                 };
-                chats.insert(chat.id, chat.clone());
-                chat
+                if let Err(e) = self.write_to_db(BUCKET_CHATS, &id.to_le_bytes(), &chat) {
+                    Err(tonic::Status::internal(format!(
+                        "failed to create chat, {}",
+                        e
+                    )))
+                } else {
+                    self.notify_chat_updated(chat.clone()).await;
+                    Ok(Response::new(chat))
+                }
             }
-        } else {
-            error!("fatal, failed to access chats");
-            return Err(tonic::Status::internal("failed to access chats"));
-        };
-        self.notify_chat_updated(chat.clone()).await;
-        Ok(Response::new(chat))
+            Err(e) => Err(tonic::Status::internal(format!(
+                "failed to access chats, {}",
+                e
+            ))),
+        }
     }
 
     #[doc = " Invites user to chat"]
@@ -733,15 +790,15 @@ impl ChatRoomService for ChatRoomImpl {
         debug!("invite_user(): {:?}", &request);
         let invitation = request.into_inner();
         // test chat exists
-        if let Ok(chats) = self.chats.read() {
-            if !chats.contains_key(&invitation.chat_id) {
+        match self.read_from_db::<proto::Chat>(BUCKET_CHATS, &invitation.chat_id.to_le_bytes()) {
+            Err(e) => return Err(tonic::Status::internal(format!("failed read chats, {}", e))),
+            Ok(None) => {
                 return Err(tonic::Status::not_found(format!(
                     "chat {} does not exist",
                     invitation.chat_id
-                )));
+                )))
             }
-        } else {
-            return Err(tonic::Status::internal("failed read chats"));
+            _ => {}
         }
         // test recepient exists
         match self.read_from_db::<proto::User>(BUCKET_USERS, &invitation.to_user_id.to_le_bytes()) {
@@ -788,25 +845,28 @@ impl ChatRoomService for ChatRoomImpl {
     ) -> Result<tonic::Response<RpcResult>, tonic::Status> {
         debug!("enter_chat(): {:?}", &request);
         let chat_ref = request.into_inner();
-        let chat = if let Ok(mut chats) = self.chats.write() {
-            if let Some(chat) = chats.get_mut(&chat_ref.chat_id) {
+        match self.update_in_db::<proto::Chat, _>(
+            BUCKET_CHATS,
+            &chat_ref.chat_id.to_le_bytes(),
+            |chat| {
                 if !chat.users.contains(&chat_ref.user_id) {
                     chat.users.push(chat_ref.user_id);
-                    chat.clone()
-                } else {
-                    return Err(tonic::Status::already_exists("already in the chat"));
                 }
-            } else {
-                return Err(tonic::Status::not_found("chat does not exist"));
+            },
+        ) {
+            Ok(Some(chat)) => {
+                self.notify_chat_updated(chat).await;
+                Ok(Response::new(RpcResult {
+                    ok: true,
+                    description: String::from("entered the chat"),
+                }))
             }
-        } else {
-            return Err(tonic::Status::internal("failed access chats (enter_chat)"));
-        };
-        self.notify_chat_updated(chat).await;
-        Ok(Response::new(RpcResult {
-            ok: true,
-            description: String::from("entered the chat"),
-        }))
+            Ok(None) => Err(tonic::Status::not_found("chat does not exist")),
+            Err(e) => Err(tonic::Status::internal(format!(
+                "failed access chats, {}",
+                e
+            ))),
+        }
     }
 
     #[doc = " Leaves active chat"]
@@ -816,28 +876,37 @@ impl ChatRoomService for ChatRoomImpl {
     ) -> Result<tonic::Response<RpcResult>, tonic::Status> {
         debug!("leave_chat(): {:?}", &request);
         let chat_ref = request.into_inner();
-        let chat = if let Ok(mut chats) = self.chats.write() {
-            if let Some(chat) = chats.get_mut(&chat_ref.chat_id) {
+        let updated_chat = match self.update_in_db::<proto::Chat, _>(
+            BUCKET_CHATS,
+            &chat_ref.chat_id.to_le_bytes(),
+            |chat| {
                 if chat.users.contains(&chat_ref.user_id) {
                     chat.users.retain(|&id| id != chat_ref.user_id);
-                    chat.clone()
-                } else {
-                    return Err(tonic::Status::already_exists("user not in the chat"));
                 }
-            } else {
-                return Err(tonic::Status::not_found("chat does not exist"));
+            },
+        ) {
+            Ok(Some(chat)) => {
+                self.notify_chat_updated(chat.clone()).await;
+                chat
             }
-        } else {
-            return Err(tonic::Status::internal("failed access chats (enter_chat)"));
+            Ok(None) => return Err(tonic::Status::not_found("chat does not exist")),
+            Err(e) => {
+                return Err(tonic::Status::internal(format!(
+                    "failed access chats, {}",
+                    e
+                )))
+            }
         };
-        if !chat.permanent && chat.users.is_empty() {
+        if !updated_chat.permanent && updated_chat.users.is_empty() {
             //remove chat
-            if let Ok(mut chats) = self.chats.write() {
-                let _ = chats.remove(&chat_ref.chat_id);
+            if let Err(e) =
+                self.remove_from_db::<proto::Chat>(BUCKET_CHATS, &chat_ref.chat_id.to_le_bytes())
+            {
+                error!("internal, {}", e);
             }
             self.notify_chat_closed(chat_ref.chat_id).await;
         } else {
-            self.notify_chat_updated(chat).await;
+            self.notify_chat_updated(updated_chat).await;
         }
         Ok(Response::new(RpcResult {
             ok: true,
@@ -847,7 +916,7 @@ impl ChatRoomService for ChatRoomImpl {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Builder::from_env(Env::default().default_filter_or("debug,h2=info,tower=info,hyper=info"))
         .target(Target::Stdout)
         .format_timestamp(Some(TimestampPrecision::Seconds))
