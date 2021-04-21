@@ -320,8 +320,8 @@ impl MigchatClient {
             Ok(response) => {
                 let mut stream = response.into_inner();
                 while let Some(updated_chats) = stream.message().await.ok().flatten() {
-                    if !updated_chats.added.is_empty() {
-                        for chat in updated_chats.added {
+                    if !updated_chats.updated.is_empty() {
+                        for chat in updated_chats.updated {
                             debug!("chat updated: {:?}", &chat);
                             if let Err(e) = tx_event
                                 .send(Event::Client(ChatRoomEvent::ChatUpdated(chat)))
@@ -332,10 +332,10 @@ impl MigchatClient {
                         }
                     }
                     if !updated_chats.gone.is_empty() {
-                        for chat in updated_chats.gone {
-                            debug!("chat has gone: {:?}", &chat);
+                        for chat_id in updated_chats.gone {
+                            debug!("chat has gone: {}", chat_id);
                             if let Err(e) = tx_event
-                                .send(Event::Client(ChatRoomEvent::ChatDeleted(chat.id)))
+                                .send(Event::Client(ChatRoomEvent::ChatDeleted(chat_id)))
                                 .await
                             {
                                 error!("failed to transfer deleted chat: {}", e);

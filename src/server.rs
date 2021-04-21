@@ -28,6 +28,12 @@ enum UserChanged {
     Offline(UserId),
 }
 
+#[derive(Clone)]
+enum ChatChanged {
+    Updated(Arc<Chat>),
+    Closed(ChatId),
+}
+
 pub struct ChatRoomImpl {
     storage: Storage,
     // new users:
@@ -35,7 +41,7 @@ pub struct ChatRoomImpl {
     // new invitations:
     invitations_listeners: RwLock<HashMap<UserId, mpsc::Sender<Invitation>>>,
     // new chats:
-    chats_listeners: RwLock<HashMap<UserId, mpsc::Sender<Arc<Chat>>>>,
+    chats_listeners: RwLock<HashMap<UserId, mpsc::Sender<ChatChanged>>>,
     // new posts:
     posts_listeners: RwLock<HashMap<UserId, mpsc::Sender<Arc<Post>>>>,
     // users statuses, stores online users:
@@ -56,7 +62,24 @@ impl ChatRoomImpl {
         })
     }
 
-    async fn notify_chat_updated(&self, chat: Chat) {
+    fn actualize_chat_listeners(&self) {
+        if let Ok(mut listeners) = self.chats_listeners.write() {
+            let before = listeners.len();
+            listeners.retain(|_k, v| !v.is_closed());
+            let removed = listeners.len() - before;
+            if removed > 0 {
+                info!(
+                    "{} outdated chat listener(s) was/were found and removed",
+                    removed
+                );
+            }
+        }
+    }
+
+    // returns true if all listeners were notified, otherwise if at least one
+    // failed to notify returns false
+    // call to actualize_chat_listeners() is recommended if the method returns false
+    async fn notify_chat_changed(&self, notification: ChatChanged) -> bool {
         let mut send_list = Vec::new();
         if let Ok(listeners) = self.chats_listeners.read() {
             for listener in listeners.values() {
@@ -64,28 +87,17 @@ impl ChatRoomImpl {
             }
         }
         if !send_list.is_empty() {
-            let send_chat = Arc::new(chat);
+            let mut fails = false;
             for tx in send_list {
-                if let Err(e) = tx.send(send_chat.clone()).await {
+                if let Err(e) = tx.send(notification.clone()).await {
                     error!("failed to broadcast new chat: {}", e);
-                    // no break;
+                    fails = true;
                 }
             }
+            !fails
+        } else {
+            true
         }
-    }
-
-    async fn notify_chat_closed(&self, _chat_id: ChatId) {
-        //todo: implement notifying through "chat updated" channel
-    }
-
-    fn get_user_listeners(&self) -> Vec<mpsc::Sender<UserChanged>> {
-        let mut send_list = Vec::new();
-        if let Ok(listeners) = self.users_listeners.read() {
-            for listener in listeners.values() {
-                send_list.push(listener.clone());
-            }
-        }
-        send_list
     }
 
     fn actualize_user_listeners(&self) {
@@ -95,7 +107,7 @@ impl ChatRoomImpl {
             let removed = listeners.len() - before;
             if removed > 0 {
                 info!(
-                    "{} obsolete user listener(s) was/were found and removed",
+                    "{} outdated user listener(s) was/were found and removed",
                     removed
                 );
             }
@@ -106,7 +118,12 @@ impl ChatRoomImpl {
     // failed to notify, returns false
     // call to actualize_user_listeners() is recommended if the method returns false
     async fn notify_user_changed(&self, notification: UserChanged) -> bool {
-        let send_list = self.get_user_listeners();
+        let mut send_list = Vec::new();
+        if let Ok(listeners) = self.users_listeners.read() {
+            for listener in listeners.values() {
+                send_list.push(listener.clone());
+            }
+        }
         if !send_list.is_empty() {
             let mut fails = false;
             for tx in send_list {

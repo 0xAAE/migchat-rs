@@ -10,7 +10,7 @@ use super::proto::{
     ChatInfo, ChatReference, Invitation, Post, Registration, Result as RpcResult, UpdateChats,
     UpdateUsers, UserInfo, NOT_CHAT_ID, NOT_POST_ID,
 };
-use super::{Chat, ChatRoomImpl, User, UserChanged, UserId};
+use super::{Chat, ChatChanged, ChatRoomImpl, User, UserChanged, UserId};
 
 fn get_user_id(user: &UserInfo) -> u64 {
     let mut hasher = FxHasher64::default();
@@ -388,18 +388,8 @@ impl ChatRoomService for ChatRoomImpl {
     ) -> Result<tonic::Response<Self::GetChatsStream>, tonic::Status> {
         debug!("get_chats(): {:?}", &request);
         let user_id = request.into_inner().user_id;
-        let (listener, notifier) = mpsc::channel::<Arc<Chat>>(4);
+        let (listener, notifier) = mpsc::channel::<ChatChanged>(4);
         if let Ok(mut listeners) = self.chats_listeners.write() {
-            // test alive
-            listeners.retain(|k, v| {
-                if v.is_closed() {
-                    debug!("stop streaming chats to {}", k);
-                    false
-                } else {
-                    true
-                }
-            });
-            // add new
             listeners.insert(user_id, listener);
         } else {
             // failed locking listeners
@@ -421,12 +411,12 @@ impl ChatRoomService for ChatRoomImpl {
             if !existing.is_empty() {
                 // send existing chats
                 let start_update = UpdateChats {
-                    added: existing,
+                    updated: existing,
                     gone: Vec::new(),
                 };
                 debug!(
                     "sending {} existing chats to {}",
-                    start_update.added.len(),
+                    start_update.updated.len(),
                     user_id
                 );
                 if let Err(e) = tx.send(Ok(start_update)).await {
@@ -435,11 +425,22 @@ impl ChatRoomService for ChatRoomImpl {
             }
             // re-translate new chats
             let mut notifier = notifier;
-            while let Some(chat) = notifier.recv().await {
-                debug!("re-translating new chat to {}", user_id);
-                let update = UpdateChats {
-                    added: vec![(*chat).clone()],
-                    gone: Vec::new(),
+            while let Some(notification) = notifier.recv().await {
+                let update = match notification {
+                    ChatChanged::Updated(chat) => {
+                        debug!("re-translating new chat to {}", user_id);
+                        UpdateChats {
+                            updated: vec![(*chat).clone()],
+                            gone: Vec::new(),
+                        }
+                    }
+                    ChatChanged::Closed(id) => {
+                        debug!("re-translating closed chat to {}", user_id);
+                        UpdateChats {
+                            updated: Vec::new(),
+                            gone: vec![id],
+                        }
+                    }
                 };
                 if let Err(e) = tx.send(Ok(update)).await {
                     error!("failed sending chat: {}", e);
@@ -502,7 +503,12 @@ impl ChatRoomService for ChatRoomImpl {
         }) {
             Ok(Some(chat)) => {
                 // chat was found & updated if needed
-                self.notify_chat_updated(chat.clone()).await;
+                if !self
+                    .notify_chat_changed(ChatChanged::Updated(Arc::new(chat.clone())))
+                    .await
+                {
+                    self.actualize_chat_listeners();
+                }
                 Ok(Response::new(chat))
             }
             Ok(None) => {
@@ -519,7 +525,12 @@ impl ChatRoomService for ChatRoomImpl {
                         e
                     )))
                 } else {
-                    self.notify_chat_updated(chat.clone()).await;
+                    if !self
+                        .notify_chat_changed(ChatChanged::Updated(Arc::new(chat.clone())))
+                        .await
+                    {
+                        self.actualize_chat_listeners();
+                    }
                     Ok(Response::new(chat))
                 }
             }
@@ -599,7 +610,12 @@ impl ChatRoomService for ChatRoomImpl {
             }
         }) {
             Ok(Some(chat)) => {
-                self.notify_chat_updated(chat).await;
+                if !self
+                    .notify_chat_changed(ChatChanged::Updated(Arc::new(chat)))
+                    .await
+                {
+                    self.actualize_chat_listeners();
+                }
                 Ok(Response::new(RpcResult {
                     ok: true,
                     description: String::from("entered the chat"),
@@ -626,7 +642,12 @@ impl ChatRoomService for ChatRoomImpl {
             }
         }) {
             Ok(Some(chat)) => {
-                self.notify_chat_updated(chat.clone()).await;
+                if !self
+                    .notify_chat_changed(ChatChanged::Updated(Arc::new(chat.clone())))
+                    .await
+                {
+                    self.actualize_chat_listeners();
+                }
                 chat
             }
             Ok(None) => return Err(tonic::Status::not_found("chat does not exist")),
@@ -637,14 +658,19 @@ impl ChatRoomService for ChatRoomImpl {
                 )))
             }
         };
-        if !updated_chat.permanent && updated_chat.users.is_empty() {
+        let all_notified = if !updated_chat.permanent && updated_chat.users.is_empty() {
             //remove chat
             if let Err(e) = self.storage.remove_chat(chat_ref.chat_id) {
                 error!("internal, {}", e);
             }
-            self.notify_chat_closed(chat_ref.chat_id).await;
+            self.notify_chat_changed(ChatChanged::Closed(chat_ref.chat_id))
+                .await
         } else {
-            self.notify_chat_updated(updated_chat).await;
+            self.notify_chat_changed(ChatChanged::Updated(Arc::new(updated_chat)))
+                .await
+        };
+        if !all_notified {
+            self.actualize_chat_listeners();
         }
         Ok(Response::new(RpcResult {
             ok: true,
