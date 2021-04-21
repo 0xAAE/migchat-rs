@@ -71,10 +71,17 @@ fn get_chat_id(description: &str, users: &[UserId]) -> u64 {
     }
 }
 
+#[derive(Clone)]
+enum UserChanged {
+    Info(Arc<User>),
+    Online(UserId),
+    Offline(UserId),
+}
+
 pub struct ChatRoomImpl {
     storage: Storage,
     // new users:
-    users_listeners: RwLock<HashMap<UserId, mpsc::Sender<Arc<User>>>>,
+    users_listeners: RwLock<HashMap<UserId, mpsc::Sender<UserChanged>>>,
     // new invitations:
     invitations_listeners: RwLock<HashMap<UserId, mpsc::Sender<Invitation>>>,
     // new chats:
@@ -121,26 +128,47 @@ impl ChatRoomImpl {
         //todo: implement notifying through "chat updated" channel
     }
 
-    async fn notify_user_entered(&self, user: User) {
+    fn get_user_listeners(&self) -> Vec<mpsc::Sender<UserChanged>> {
         let mut send_list = Vec::new();
         if let Ok(listeners) = self.users_listeners.read() {
             for listener in listeners.values() {
                 send_list.push(listener.clone());
             }
         }
-        if !send_list.is_empty() {
-            let send_user = Arc::new(user);
-            for tx in send_list {
-                if let Err(e) = tx.send(send_user.clone()).await {
-                    error!("failed to broadcast new user: {}", e);
-                    //no break;
-                }
+        send_list
+    }
+
+    fn actualize_user_listeners(&self) {
+        if let Ok(mut listeners) = self.users_listeners.write() {
+            let before = listeners.len();
+            listeners.retain(|_k, v| !v.is_closed());
+            let removed = listeners.len() - before;
+            if removed > 0 {
+                info!(
+                    "{} obsolete user listener(s) was/were found and removed",
+                    removed
+                );
             }
         }
     }
 
-    async fn notify_user_gone(&self, _user_id: UserId) {
-        //todo: implement sending gone info through listeners (enum?)
+    // returns true if all listeners were notified, orhewise, if at least one
+    // failed to notify, returns false
+    // call to actualize_user_listeners() is recommended if the method returns false
+    async fn notify_user_changed(&self, notification: UserChanged) -> bool {
+        let send_list = self.get_user_listeners();
+        if !send_list.is_empty() {
+            let mut fails = false;
+            for tx in send_list {
+                if let Err(e) = tx.send(notification.clone()).await {
+                    error!("failed to broadcast user info: {}", e);
+                    fails = true;
+                }
+            }
+            !fails
+        } else {
+            true
+        }
     }
 
     async fn notify_new_post(&self, post: Post) {
@@ -210,7 +238,9 @@ impl ChatRoomService for ChatRoomImpl {
             Ok(opt) => {
                 if let Some(u) = opt {
                     debug!("{} ({}) already registered", u.short_name, u.name);
-                    self.notify_user_entered(u.clone()).await;
+                    if !self.notify_user_changed(UserChanged::Online(u.id)).await {
+                        self.actualize_user_listeners();
+                    }
                     return Ok(Response::new(Registration { user_id: id }));
                 }
             }
@@ -221,7 +251,12 @@ impl ChatRoomService for ChatRoomImpl {
             short_name: user_info.short_name,
         };
         // store new user
-        self.notify_user_entered(new_user.clone()).await;
+        if !self
+            .notify_user_changed(UserChanged::Info(Arc::new(new_user.clone())))
+            .await
+        {
+            self.actualize_user_listeners();
+        }
         if let Err(e) = self.storage.write_user(new_user.id, &new_user) {
             Err(tonic::Status::internal(format!("{}", e)))
         } else {
@@ -313,7 +348,12 @@ impl ChatRoomService for ChatRoomImpl {
         if let Ok(mut online_users) = self.online_users.write() {
             online_users.remove(&user_id);
         }
-        self.notify_user_gone(user_id).await;
+        if !self
+            .notify_user_changed(UserChanged::Offline(user_id))
+            .await
+        {
+            self.actualize_user_listeners();
+        }
         Ok(Response::new(RpcResult {
             ok: true,
             description: String::from("logout successful"),
@@ -398,7 +438,7 @@ impl ChatRoomService for ChatRoomImpl {
     ) -> Result<tonic::Response<Self::GetUsersStream>, tonic::Status> {
         debug!("get_users(): {:?}", &request);
         let user_id = request.into_inner().user_id;
-        let (listener, notifier) = mpsc::channel::<Arc<User>>(4);
+        let (listener, notifier) = mpsc::channel::<UserChanged>(4);
         if let Ok(mut listeners) = self.users_listeners.write() {
             // test alive
             listeners.retain(|k, v| {
@@ -459,14 +499,34 @@ impl ChatRoomService for ChatRoomImpl {
                     error!("failed sending existing users: {}", e);
                 }
             }
-            // re-translate new users
+            // re-translate new users, all new users will start with online status
             let mut notifier = notifier;
-            while let Some(user) = notifier.recv().await {
-                debug!("re-translating new user to {}", user_id);
-                let update = UpdateUsers {
-                    added: vec![user.deref().clone()],
-                    online: vec![user.id],
-                    offline: Vec::new(),
+            while let Some(notification) = notifier.recv().await {
+                let update = match notification {
+                    UserChanged::Info(user) => {
+                        debug!("re-translating new online user {} to {}", user.id, user_id);
+                        UpdateUsers {
+                            added: vec![user.deref().clone()],
+                            online: vec![user.id],
+                            offline: Vec::new(),
+                        }
+                    }
+                    UserChanged::Online(id) => {
+                        debug!("re-translating entered {} to {}", id, user_id);
+                        UpdateUsers {
+                            added: Vec::new(),
+                            online: vec![user_id],
+                            offline: Vec::new(),
+                        }
+                    }
+                    UserChanged::Offline(id) => {
+                        debug!("re-translating gone {} to {}", id, user_id);
+                        UpdateUsers {
+                            added: Vec::new(),
+                            online: Vec::new(),
+                            offline: vec![user_id],
+                        }
+                    }
                 };
                 if let Err(e) = tx.send(Ok(update)).await {
                     error!("failed sending users update: {}, stop", e);
