@@ -1,6 +1,5 @@
-use super::{Chat, ChatId, InternalError, User, UserId};
+use super::{Chat, ChatId, InternalError, Post, User, UserId};
 use bytes::BytesMut;
-use jammdb::{self, Data};
 use log::error;
 use prost::Message;
 use std::path::Path;
@@ -43,6 +42,8 @@ impl Storage {
         Ok(Self { db })
     }
 
+    // operations with users
+
     pub fn read_user(&self, id: UserId) -> Result<Option<User>, InternalError> {
         self.read_from_db::<User>(BUCKET_USERS, &id.to_le_bytes())
     }
@@ -67,6 +68,8 @@ impl Storage {
         self.remove_from_db::<User>(BUCKET_USERS, &id.to_le_bytes())
     }
 
+    // operations with chats
+
     pub fn read_chat(&self, id: ChatId) -> Result<Option<Chat>, InternalError> {
         self.read_from_db::<Chat>(BUCKET_CHATS, &id.to_le_bytes())
     }
@@ -90,6 +93,8 @@ impl Storage {
     pub fn remove_chat(&self, id: ChatId) -> Result<(), InternalError> {
         self.remove_from_db::<Chat>(BUCKET_CHATS, &id.to_le_bytes())
     }
+
+    // generic operations with user / chats implementation
 
     fn read_from_db<M: Message + Default>(
         &self,
@@ -195,18 +200,11 @@ impl Storage {
             Ok(tx) => match tx.get_bucket(bucket_name) {
                 Ok(bucket) => {
                     let mut items = Vec::new();
-                    for data in bucket.cursor() {
-                        match &*data {
-                            Data::Bucket(_) => {
-                                error!("internal error, BUCKET_USERS contains child bucket")
-                            }
-                            Data::KeyValue(kv) => {
-                                let bin = kv.value();
-                                match M::decode(bin) {
-                                    Ok(user) => items.push(user),
-                                    Err(e) => error!("internal error, {}", e),
-                                }
-                            }
+                    for pair in bucket.kv_pairs() {
+                        let bin = pair.value();
+                        match M::decode(bin) {
+                            Ok(user) => items.push(user),
+                            Err(e) => error!("internal error, {}", e),
                         }
                     }
                     Ok(items)
@@ -230,6 +228,59 @@ impl Storage {
                     .delete(id)
                     .map(|_| ())
                     .map_err(|e| format!("{}", e).into()),
+                Err(e) => Err(e.into()),
+            },
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    // operations with posts
+    // all posts stored groupped by their chats into separate buckets: BUCKET_POSTS/chat_id/*
+    // the post's key in the storage is a sequential integer to preserve posts natural order
+    pub fn write_post(&self, post: &Post) -> Result<(), InternalError> {
+        match self.db.tx(true) {
+            Ok(tx) => match tx.get_bucket(BUCKET_POSTS) {
+                Ok(root_bucket) => {
+                    match root_bucket.get_or_create_bucket(&post.chat_id.to_le_bytes()) {
+                        Ok(chat_bucket) => {
+                            let mut buf = BytesMut::new();
+                            match post.encode(&mut buf) {
+                                Ok(_) => {
+                                    let k = chat_bucket.next_int();
+                                    match chat_bucket.put(&k.to_le_bytes(), buf) {
+                                        Ok(_) => tx.commit().map_err(|e| e.into()),
+                                        Err(e) => Err(e.into()),
+                                    }
+                                }
+                                Err(e) => Err(e.into()),
+                            }
+                        }
+                        Err(e) => Err(e.into()),
+                    }
+                }
+                Err(e) => Err(e.into()),
+            },
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn read_chat_posts(&self, chat_id: ChatId) -> Result<Vec<Post>, InternalError> {
+        match self.db.tx(false) {
+            Ok(tx) => match tx.get_bucket(BUCKET_POSTS) {
+                Ok(root_bucket) => match root_bucket.get_bucket(&chat_id.to_le_bytes()) {
+                    Ok(chat_bucket) => {
+                        let mut posts = Vec::new();
+                        for pair in chat_bucket.kv_pairs() {
+                            let bin = pair.value();
+                            match Post::decode(bin) {
+                                Ok(post) => posts.push(post),
+                                Err(e) => error!("internal error, {}", e),
+                            }
+                        }
+                        Ok(posts)
+                    }
+                    Err(e) => Err(e.into()),
+                },
                 Err(e) => Err(e.into()),
             },
             Err(e) => Err(e.into()),

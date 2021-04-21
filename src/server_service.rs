@@ -209,31 +209,25 @@ impl ChatRoomService for ChatRoomImpl {
         let user_id = request.into_inner().user_id;
         let (listener, notifier) = mpsc::channel::<Arc<Post>>(4);
         if let Ok(mut listeners) = self.posts_listeners.write() {
-            // test alive
-            listeners.retain(|k, v| {
-                if v.is_closed() {
-                    debug!("stop streaming posts to {}", k);
-                    false
-                } else {
-                    true
-                }
-            });
-            // add new
             listeners.insert(user_id, listener);
         } else {
             return Err(tonic::Status::internal("no access to posts listeners"));
         }
-        //todo: collect existing posts
-        let existing = Vec::new();
-        // if let Ok(users) = self.users.read() {
-        //     for user in users.values() {
-        //         if user.user_id != user_id {
-        //             existing.push(user.clone());
-        //         }
-        //     }
-        // } else {
-        //     error!("failed to read existing users");
-        // }
+        // collect existing posts from chats where user is a member
+        let mut existing = Vec::new();
+        if let Ok(chats) = self.storage.read_all_chats() {
+            for chat in chats {
+                if chat.users.contains(&user_id) {
+                    if let Ok(mut posts) = self.storage.read_chat_posts(chat.id) {
+                        existing.append(&mut posts);
+                    } else {
+                        error!("failed to read posts");
+                    }
+                }
+            }
+        } else {
+            error!("failed to read chats");
+        }
         // start permanent listener that streams data to remote client
         let (tx, rx) = mpsc::channel(4);
         tokio::spawn(async move {
@@ -291,16 +285,13 @@ impl ChatRoomService for ChatRoomImpl {
             return Err(tonic::Status::internal("no access to users listeners"));
         }
         // collect existing users
-        let mut existing = Vec::new();
-        if let Ok(users) = self.storage.read_all_users() {
-            for user in users {
-                if user.id != user_id {
-                    existing.push(user.clone());
-                }
-            }
+        let existing = if let Ok(mut users) = self.storage.read_all_users() {
+            users.retain(|u| u.id != user_id);
+            users
         } else {
             error!("failed to read existing users");
-        }
+            Vec::new()
+        };
         // collect statuses
         let mut online = Vec::new();
         let mut offline = Vec::new();
@@ -396,14 +387,12 @@ impl ChatRoomService for ChatRoomImpl {
             return Err(tonic::Status::internal("no access to chat listeners"));
         }
         // collect existing chats
-        let mut existing = Vec::new();
-        if let Ok(chats) = self.storage.read_all_chats() {
-            for chat in chats {
-                existing.push(chat.clone());
-            }
+        let existing = if let Ok(chats) = self.storage.read_all_chats() {
+            chats
         } else {
             error!("failed to read existing chats");
-        }
+            Vec::new()
+        };
         // start permanent listener that streams data to remote client
         let (tx, rx) = mpsc::channel(4);
         tokio::spawn(async move {
@@ -469,7 +458,12 @@ impl ChatRoomService for ChatRoomImpl {
             )));
         }
         post.id = new_post_id();
-        self.notify_new_post(post).await;
+        if let Err(e) = self.storage.write_post(&post) {
+            error!("failed to save post, {}", e);
+        }
+        if !self.notify_new_post(post).await {
+            self.actualize_post_listeners();
+        }
         Ok(Response::new(RpcResult {
             ok: true,
             description: String::from("accepted"),

@@ -138,7 +138,25 @@ impl ChatRoomImpl {
         }
     }
 
-    async fn notify_new_post(&self, post: Post) {
+    fn actualize_post_listeners(&self) {
+        if let Ok(mut listeners) = self.posts_listeners.write() {
+            let before = listeners.len();
+            listeners.retain(|_k, v| !v.is_closed());
+            let removed = listeners.len() - before;
+            if removed > 0 {
+                info!(
+                    "{} outdated post listener(s) was/were found and removed",
+                    removed
+                );
+            }
+        }
+    }
+
+    // notifies all chat members about new post
+    // returns true if all listeners were notified, orhewise, if at least one
+    // failed to notify, returns false
+    // call to actualize_post_listeners() is recommended if the method returns false
+    async fn notify_new_post(&self, post: Post) -> bool {
         // найти чат по id, запомнить список user_id-получателей - всех участников, включая автора поста
         let mut users = Vec::new();
         if let Ok(Some(chat)) = self.storage.read_chat(post.chat_id) {
@@ -147,27 +165,32 @@ impl ChatRoomImpl {
             }
         }
         if users.is_empty() {
-            return;
-        }
-        // создать список каналов к получателям поста из списка получателей
-        let mut send_list = Vec::new();
-        if let Ok(listeners) = self.posts_listeners.read() {
-            for user_id in users {
-                debug!("search channel to {} for post", user_id);
-                if let Some(listener) = listeners.get(&user_id) {
-                    debug!("found channel to {} for post", user_id);
-                    send_list.push(listener.clone());
+            true
+        } else {
+            // создать список каналов к получателям поста из списка получателей
+            let mut send_list = Vec::new();
+            if let Ok(listeners) = self.posts_listeners.read() {
+                for user_id in users {
+                    debug!("search channel to {} for post", user_id);
+                    if let Some(listener) = listeners.get(&user_id) {
+                        debug!("found channel to {} for post", user_id);
+                        send_list.push(listener.clone());
+                    }
                 }
             }
-        }
-        // подготовить пост и разослать
-        if !send_list.is_empty() {
-            let send_post = Arc::new(post);
-            for tx in send_list {
-                if let Err(e) = tx.send(send_post.clone()).await {
-                    error!("failed to send post: {}", e);
-                    //no break;
+            // подготовить пост и разослать
+            if !send_list.is_empty() {
+                let send_post = Arc::new(post);
+                let mut fails = false;
+                for tx in send_list {
+                    if let Err(e) = tx.send(send_post.clone()).await {
+                        error!("failed to send post: {}", e);
+                        fails = true;
+                    }
                 }
+                !fails
+            } else {
+                true
             }
         }
     }
