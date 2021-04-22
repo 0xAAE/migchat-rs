@@ -490,9 +490,12 @@ impl ChatRoomService for ChatRoomImpl {
         };
         let id = get_chat_id(&info.description, &users);
         // test chat exists and enter the chat if that has not been done before
-        match self.storage.update_chat(id, |chat| {
-            if info.auto_enter && !chat.users.contains(&info.user_id) {
-                chat.users.push(info.user_id);
+        match self.storage.update_chat(id, |mut_ref_chat| {
+            if info.auto_enter && !mut_ref_chat.users.contains(&info.user_id) {
+                mut_ref_chat.users.push(info.user_id);
+                true
+            } else {
+                false
             }
         }) {
             Ok(Some(chat)) => {
@@ -598,9 +601,12 @@ impl ChatRoomService for ChatRoomImpl {
     ) -> Result<tonic::Response<RpcResult>, tonic::Status> {
         debug!("enter_chat(): {:?}", &request);
         let chat_ref = request.into_inner();
-        match self.storage.update_chat(chat_ref.chat_id, |chat| {
-            if !chat.users.contains(&chat_ref.user_id) {
-                chat.users.push(chat_ref.user_id);
+        match self.storage.update_chat(chat_ref.chat_id, |mut_ref_chat| {
+            if !mut_ref_chat.users.contains(&chat_ref.user_id) {
+                mut_ref_chat.users.push(chat_ref.user_id);
+                true
+            } else {
+                false
             }
         }) {
             Ok(Some(chat)) => {
@@ -630,9 +636,12 @@ impl ChatRoomService for ChatRoomImpl {
     ) -> Result<tonic::Response<RpcResult>, tonic::Status> {
         debug!("leave_chat(): {:?}", &request);
         let chat_ref = request.into_inner();
-        let updated_chat = match self.storage.update_chat(chat_ref.chat_id, |chat| {
-            if chat.users.contains(&chat_ref.user_id) {
-                chat.users.retain(|&id| id != chat_ref.user_id);
+        let updated_chat = match self.storage.update_chat(chat_ref.chat_id, |mut_ref_chat| {
+            if mut_ref_chat.users.contains(&chat_ref.user_id) {
+                mut_ref_chat.users.retain(|&id| id != chat_ref.user_id);
+                true
+            } else {
+                false
             }
         }) {
             Ok(Some(chat)) => {

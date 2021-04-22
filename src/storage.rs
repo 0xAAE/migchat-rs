@@ -52,7 +52,13 @@ impl Storage {
         self.write_to_db::<User>(BUCKET_USERS, &id.to_le_bytes(), user)
     }
 
-    pub fn _update_user<F: FnMut(&mut User)>(
+    /// Tries to conditionally update specified user.
+    /// Returns:
+    /// - InternalError if some error happens
+    /// - Ok(Some(user)) if user was found and successfully updated; user contains *new* value
+    /// - Ok(Some(user)) if user was found but updater returned false; user contains *unchanged* value, and database remains unchanged
+    /// - Ok(None) if user was not found
+    pub fn _update_user<F: FnMut(&mut User) -> bool>(
         &self,
         id: UserId,
         updater: F,
@@ -64,8 +70,15 @@ impl Storage {
         self.read_all_from_db::<User>(BUCKET_USERS)
     }
 
-    pub fn _remove_user(&self, id: UserId) -> Result<(), InternalError> {
-        self.remove_from_db::<User>(BUCKET_USERS, &id.to_le_bytes())
+    #[allow(dead_code)]
+    pub fn remove_user(&self, id: UserId) -> Result<(), InternalError> {
+        // remove the user out of all chats
+        self.update_all_in_db::<Chat, _>(BUCKET_CHATS, |mut_ref_chat| {
+            let cnt_before = mut_ref_chat.users.len();
+            mut_ref_chat.users.retain(|&u| u != id);
+            mut_ref_chat.users.len() < cnt_before
+        })
+        .and(self.remove_from_db::<User>(BUCKET_USERS, &id.to_le_bytes()))
     }
 
     // operations with chats
@@ -78,7 +91,13 @@ impl Storage {
         self.write_to_db::<Chat>(BUCKET_CHATS, &id.to_le_bytes(), chat)
     }
 
-    pub fn update_chat<F: FnMut(&mut Chat)>(
+    /// Tries to conditionally update specified chat.
+    /// Returns:
+    /// - InternalError if some error happens
+    /// - Ok(Some(chat)) if chat was found and successfully updated; chat contains *new* value
+    /// - Ok(Some(chat)) if chat was found but updater returned false; chat contains *unchanged* value, and database remains unchanged
+    /// - Ok(None) if chat was not found
+    pub fn update_chat<F: FnMut(&mut Chat) -> bool>(
         &self,
         id: ChatId,
         updater: F,
@@ -91,7 +110,8 @@ impl Storage {
     }
 
     pub fn remove_chat(&self, id: ChatId) -> Result<(), InternalError> {
-        self.remove_from_db::<Chat>(BUCKET_CHATS, &id.to_le_bytes())
+        self.remove_chat_posts(id)
+            .and(self.remove_from_db::<Chat>(BUCKET_CHATS, &id.to_le_bytes()))
     }
 
     // generic operations with user / chats implementation
@@ -146,7 +166,13 @@ impl Storage {
         }
     }
 
-    fn update_in_db<M: Message + Default + Clone, F: FnMut(&mut M)>(
+    /// Tries to conditionally update specified item.
+    /// Returns:
+    /// - InternalError if some error happens
+    /// - Ok(Some(item)) if item was found and successfully updated; item contains *new* value
+    /// - Ok(Some(item)) if item was found but updater returned false; item contains *unchanged* value, and database remains unchanged
+    /// - Ok(None) if item was not found
+    fn update_in_db<M: Message + Default + Clone, F: FnMut(&mut M) -> bool>(
         &self,
         bucket_name: &str,
         id: &[u8],
@@ -159,19 +185,19 @@ impl Storage {
                         // read
                         let bin = kv.value();
                         match M::decode(bin) {
-                            Ok(item) => {
-                                let mut new_item = item;
+                            Ok(mut item) => {
                                 // update
-                                updater(&mut new_item);
+                                if !updater(&mut item) {
+                                    return Ok(Some(item));
+                                }
                                 // serialize
                                 let mut buf = BytesMut::new();
-                                match new_item.encode(&mut buf) {
+                                match item.encode(&mut buf) {
                                     Ok(_) => match bucket.put(id, buf) {
                                         // store into db
-                                        Ok(_) => tx
-                                            .commit()
-                                            .map(|_| Some(new_item))
-                                            .map_err(|e| e.into()),
+                                        Ok(_) => {
+                                            tx.commit().map(|_| Some(item)).map_err(|e| e.into())
+                                        }
                                         Err(e) => Err(e.into()),
                                     },
                                     Err(e) => Err(e.into()),
@@ -184,6 +210,50 @@ impl Storage {
                         }
                     } else {
                         Ok(None)
+                    }
+                }
+                Err(e) => Err(e.into()),
+            },
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Tries to conditionally update all items in specified bucket.
+    /// Returns:
+    /// - InternalError if some error happens
+    /// - Ok(count) if some items were updated
+    /// - Ok(0) if no item was updated
+    fn update_all_in_db<M: Message + Default + Clone, F: FnMut(&mut M) -> bool>(
+        &self,
+        bucket_name: &str,
+        mut updater: F,
+    ) -> Result<usize, InternalError> {
+        match self.db.tx(true) {
+            Ok(tx) => match tx.get_bucket(bucket_name) {
+                Ok(bucket) => {
+                    let mut cnt_updated = 0;
+                    for pair in bucket.kv_pairs() {
+                        // read
+                        let bin = pair.value();
+                        match M::decode(bin) {
+                            Ok(mut item) => {
+                                if updater(&mut item) {
+                                    let mut buf = BytesMut::new();
+                                    if item.encode(&mut buf).is_ok() {
+                                        match bucket.put(pair.key(), buf) {
+                                            Ok(_) => cnt_updated += 1,
+                                            Err(e) => error!("failed to store updated item, {}", e),
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => error!("failed to parse item, {}", e),
+                        }
+                    }
+                    if cnt_updated > 0 {
+                        tx.commit().map(|_| cnt_updated).map_err(|e| e.into())
+                    } else {
+                        Ok(0)
                     }
                 }
                 Err(e) => Err(e.into()),
@@ -222,7 +292,7 @@ impl Storage {
     ) -> Result<(), InternalError> {
         // does not require writable tx!
         // see https://docs.rs/jammdb/0.5.0/jammdb/struct.Bucket.html#method.delete
-        match self.db.tx(false) {
+        match self.db.tx(true) {
             Ok(tx) => match tx.get_bucket(bucket_name) {
                 Ok(bucket) => bucket
                     .delete(id)
@@ -281,6 +351,18 @@ impl Storage {
                     }
                     Err(e) => Err(e.into()),
                 },
+                Err(e) => Err(e.into()),
+            },
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn remove_chat_posts(&self, id: ChatId) -> Result<(), InternalError> {
+        match self.db.tx(true) {
+            Ok(tx) => match tx.get_bucket(BUCKET_POSTS) {
+                Ok(root_bucket) => root_bucket
+                    .delete_bucket(&id.to_le_bytes())
+                    .map_err(|e| e.into()),
                 Err(e) => Err(e.into()),
             },
             Err(e) => Err(e.into()),
