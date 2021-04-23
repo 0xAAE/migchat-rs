@@ -66,7 +66,7 @@ impl ChatRoomImpl {
         if let Ok(mut listeners) = self.chats_listeners.write() {
             let before = listeners.len();
             listeners.retain(|_k, v| !v.is_closed());
-            let removed = listeners.len() - before;
+            let removed = before - listeners.len();
             if removed > 0 {
                 info!(
                     "{} outdated chat listener(s) was/were found and removed",
@@ -104,7 +104,7 @@ impl ChatRoomImpl {
         if let Ok(mut listeners) = self.users_listeners.write() {
             let before = listeners.len();
             listeners.retain(|_k, v| !v.is_closed());
-            let removed = listeners.len() - before;
+            let removed = before - listeners.len();
             if removed > 0 {
                 info!(
                     "{} outdated user listener(s) was/were found and removed",
@@ -142,7 +142,7 @@ impl ChatRoomImpl {
         if let Ok(mut listeners) = self.posts_listeners.write() {
             let before = listeners.len();
             listeners.retain(|_k, v| !v.is_closed());
-            let removed = listeners.len() - before;
+            let removed = before - listeners.len();
             if removed > 0 {
                 info!(
                     "{} outdated post listener(s) was/were found and removed",

@@ -218,10 +218,9 @@ impl ChatRoomService for ChatRoomImpl {
         if let Ok(chats) = self.storage.read_all_chats() {
             for chat in chats {
                 if chat.users.contains(&user_id) {
-                    if let Ok(mut posts) = self.storage.read_chat_posts(chat.id) {
-                        existing.append(&mut posts);
-                    } else {
-                        error!("failed to read posts");
+                    match self.storage.read_chat_posts(chat.id) {
+                        Ok(mut posts) => existing.append(&mut posts),
+                        Err(e) => error!("failed to read posts, {}", e),
                     }
                 }
             }

@@ -1,6 +1,6 @@
 use super::{Chat, ChatId, InternalError, Post, User, UserId};
 use bytes::BytesMut;
-use log::error;
+use log::{debug, error};
 use prost::Message;
 use std::path::Path;
 
@@ -349,6 +349,10 @@ impl Storage {
                         }
                         Ok(posts)
                     }
+                    Err(jammdb::Error::BucketMissing) => {
+                        debug!("there wasn't any posts in requested chat");
+                        Ok(Vec::new())
+                    }
                     Err(e) => Err(e.into()),
                 },
                 Err(e) => Err(e.into()),
@@ -367,5 +371,91 @@ impl Storage {
             },
             Err(e) => Err(e.into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    const TEST_DB: &str = "migchat-test-storage.db";
+
+    #[test]
+    fn test_write_post() {
+        let _ = std::fs::remove_file(TEST_DB);
+        {
+            let _storage = Storage::new(TEST_DB).unwrap();
+            let _post = Post {
+                id: 1,
+                chat_id: 2,
+                user_id: 3,
+                text: String::from("text"),
+                attachments: Vec::new(),
+            };
+            //let res = storage.write_post(&post);
+            //assert!(res.is_ok());
+        }
+        let _ = std::fs::remove_file(TEST_DB);
+    }
+
+    #[test]
+    fn test_get_or_create_bucket() {
+        let _ = std::fs::remove_file(TEST_DB);
+        {
+            let db = jammdb::DB::open(TEST_DB).unwrap();
+            {
+                let tx = db.tx(true).unwrap();
+                let _bucket = tx.get_or_create_bucket("ROOT").unwrap();
+                tx.commit().unwrap();
+            }
+            {
+                let tx = db.tx(true).unwrap();
+                let root_bucket = tx.get_bucket("ROOT").unwrap();
+                let child_bucket = root_bucket.get_or_create_bucket("100").unwrap();
+                tx.commit().unwrap();
+            }
+            // {
+            //     //assert!(child_bucket);
+            //     let mut post = Post {
+            //         id: 1000,
+            //         chat_id: 2000,
+            //         user_id: 3,
+            //         text: String::from("text"),
+            //         attachments: Vec::new(),
+            //     };
+
+            //     match db.tx(true) {
+            //         Ok(tx) => match tx.get_bucket(BUCKET_POSTS) {
+            //             Ok(root_bucket) => {
+            //                 match root_bucket.create_bucket(&post.chat_id.to_le_bytes()) {
+            //                     Ok(chat_bucket) => {
+            //                         let mut buf = BytesMut::new();
+            //                         match post.encode(&mut buf) {
+            //                             Ok(_) => {
+            //                                 assert_eq!(chat_bucket.next_int(), 0);
+            //                                 assert_eq!(chat_bucket.next_int(), 0);
+            //                                 post.id = chat_bucket.next_int();
+            //                                 match chat_bucket.put(&post.id.to_le_bytes(), buf) {
+            //                                     Ok(_) => {
+            //                                         assert_eq!(chat_bucket.next_int(), 1);
+            //                                         //assert!(tx.commit().is_ok());
+            //                                     }
+            //                                     Err(_e) => assert!(false),
+            //                                 }
+            //                             }
+            //                             Err(_e) => assert!(false),
+            //                         }
+            //                     }
+            //                     Err(_e) => assert!(false),
+            //                 }
+            //             }
+            //             Err(_e) => assert!(false),
+            //         },
+            //         Err(_e) => assert!(false),
+            //     };
+            // }
+        }
+        let _ = std::fs::remove_file(TEST_DB);
     }
 }
