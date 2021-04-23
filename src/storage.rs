@@ -309,19 +309,14 @@ impl Storage {
     // the post's key in the storage is a sequential integer to preserve posts natural order
     pub fn write_post(&self, post: &Post) -> Result<(), InternalError> {
         match self.db.tx(true) {
-            Ok(tx) => match tx.get_bucket(BUCKET_POSTS) {
-                Ok(root_bucket) => {
-                    match root_bucket.get_or_create_bucket(&post.chat_id.to_le_bytes()) {
-                        Ok(chat_bucket) => {
-                            let mut buf = BytesMut::new();
-                            match post.encode(&mut buf) {
-                                Ok(_) => {
-                                    let k = chat_bucket.next_int();
-                                    match chat_bucket.put(&k.to_le_bytes(), buf) {
-                                        Ok(_) => tx.commit().map_err(|e| e.into()),
-                                        Err(e) => Err(e.into()),
-                                    }
-                                }
+            Ok(tx) => match tx.get_or_create_bucket(&post.chat_id.to_le_bytes()) {
+                Ok(chat_bucket) => {
+                    let mut buf = BytesMut::new();
+                    match post.encode(&mut buf) {
+                        Ok(_) => {
+                            let k = chat_bucket.next_int();
+                            match chat_bucket.put(&k.to_le_bytes(), buf) {
+                                Ok(_) => tx.commit().map_err(|e| e.into()),
                                 Err(e) => Err(e.into()),
                             }
                         }
@@ -336,25 +331,22 @@ impl Storage {
 
     pub fn read_chat_posts(&self, chat_id: ChatId) -> Result<Vec<Post>, InternalError> {
         match self.db.tx(false) {
-            Ok(tx) => match tx.get_bucket(BUCKET_POSTS) {
-                Ok(root_bucket) => match root_bucket.get_bucket(&chat_id.to_le_bytes()) {
-                    Ok(chat_bucket) => {
-                        let mut posts = Vec::new();
-                        for pair in chat_bucket.kv_pairs() {
-                            let bin = pair.value();
-                            match Post::decode(bin) {
-                                Ok(post) => posts.push(post),
-                                Err(e) => error!("internal error, {}", e),
-                            }
+            Ok(tx) => match tx.get_bucket(&chat_id.to_le_bytes()) {
+                Ok(chat_bucket) => {
+                    let mut posts = Vec::new();
+                    for pair in chat_bucket.kv_pairs() {
+                        let bin = pair.value();
+                        match Post::decode(bin) {
+                            Ok(post) => posts.push(post),
+                            Err(e) => error!("internal error, {}", e),
                         }
-                        Ok(posts)
                     }
-                    Err(jammdb::Error::BucketMissing) => {
-                        debug!("there wasn't any posts in requested chat");
-                        Ok(Vec::new())
-                    }
-                    Err(e) => Err(e.into()),
-                },
+                    Ok(posts)
+                }
+                Err(jammdb::Error::BucketMissing) => {
+                    debug!("there wasn't any posts in requested chat");
+                    Ok(Vec::new())
+                }
                 Err(e) => Err(e.into()),
             },
             Err(e) => Err(e.into()),
@@ -363,12 +355,10 @@ impl Storage {
 
     fn remove_chat_posts(&self, id: ChatId) -> Result<(), InternalError> {
         match self.db.tx(true) {
-            Ok(tx) => match tx.get_bucket(BUCKET_POSTS) {
-                Ok(root_bucket) => root_bucket
-                    .delete_bucket(&id.to_le_bytes())
-                    .map_err(|e| e.into()),
-                Err(e) => Err(e.into()),
-            },
+            Ok(tx) => tx
+                .delete_bucket(&id.to_le_bytes())
+                .and(tx.commit())
+                .map_err(|e| e.into()),
             Err(e) => Err(e.into()),
         }
     }
@@ -413,7 +403,7 @@ mod tests {
                 let tx = db.tx(true).unwrap();
                 let root_bucket = tx.get_bucket("ROOT").unwrap();
                 let child_bucket = root_bucket.get_or_create_bucket("100").unwrap();
-                tx.commit().unwrap();
+                // tx.commit().unwrap();
             }
             // {
             //     //assert!(child_bucket);

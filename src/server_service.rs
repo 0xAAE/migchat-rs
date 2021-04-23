@@ -56,6 +56,36 @@ fn get_chat_id(description: &str, users: &[UserId]) -> u64 {
     }
 }
 
+#[test]
+fn chat_identification() {
+    let user1 = UserInfo {
+        name: "user 1".to_string(),
+        short_name: "u1".to_string(),
+    };
+    let user2 = UserInfo {
+        name: "user 2".to_string(),
+        short_name: "u2".to_string(),
+    };
+    let user3 = UserInfo {
+        name: "user 3".to_string(),
+        short_name: "u3".to_string(),
+    };
+    let id_u1 = get_user_id(&user1);
+    let id_u2 = get_user_id(&user2);
+    let id_u3 = get_user_id(&user3);
+
+    let id_c12 = get_chat_id("", &vec![id_u1, id_u2]);
+    let id_c13 = get_chat_id("", &vec![id_u1, id_u3]);
+    let id_c23 = get_chat_id("", &vec![id_u2, id_u3]);
+    let id_c123 = get_chat_id("", &vec![id_u1, id_u2, id_u3]);
+    assert_ne!(id_c12, id_c13);
+    assert_ne!(id_c12, id_c23);
+    assert_ne!(id_c12, id_c123);
+    assert_ne!(id_c23, id_c13);
+    assert_ne!(id_c123, id_c13);
+    assert_ne!(id_c123, id_c23);
+}
+
 #[tonic::async_trait]
 impl ChatRoomService for ChatRoomImpl {
     #[doc = " Sends a reqistration request"]
