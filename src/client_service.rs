@@ -17,7 +17,8 @@ use tonic::transport::{Channel, Endpoint};
 
 pub enum ChatRoomEvent {
     Registered(UserId),     // user_id
-    UserEntered(User),      // user_id, name, short_name
+    UserInfo(User),         // user_id, name, short_name
+    UserEntered(UserId),    // user_id
     UserGone(UserId),       // user_id
     ChatUpdated(Chat),      // chat_id
     ChatDeleted(ChatId),    // chat_id
@@ -215,24 +216,31 @@ impl MigchatClient {
                 while let Some(update_users) = stream.message().await.ok().flatten() {
                     if !update_users.added.is_empty() {
                         for user in update_users.added {
-                            debug!("user entered: {:?}", &user);
+                            debug!("user info: {:?}", &user);
                             if let Err(e) = tx_event
-                                .send(Event::Client(ChatRoomEvent::UserEntered(user)))
+                                .send(Event::Client(ChatRoomEvent::UserInfo(user)))
                                 .await
                             {
                                 error!("failed to transfer entered user: {}", e);
                             }
                         }
                     }
-                    if !update_users.gone.is_empty() {
-                        for user in update_users.gone {
-                            debug!("user exited: {:?}", &user);
-                            if let Err(e) = tx_event
-                                .send(Event::Client(ChatRoomEvent::UserGone(user.id)))
-                                .await
-                            {
-                                error!("failed to transfer exited user: {}", e);
-                            }
+                    for id in update_users.online {
+                        debug!("user online: {}", id);
+                        if let Err(e) = tx_event
+                            .send(Event::Client(ChatRoomEvent::UserEntered(id)))
+                            .await
+                        {
+                            error!("failed to transfer entered user: {}", e);
+                        }
+                    }
+                    for id in update_users.offline {
+                        debug!("user offline: {}", id);
+                        if let Err(e) = tx_event
+                            .send(Event::Client(ChatRoomEvent::UserGone(id)))
+                            .await
+                        {
+                            error!("failed to transfer offline user: {}", e);
                         }
                     }
                 }
@@ -312,8 +320,8 @@ impl MigchatClient {
             Ok(response) => {
                 let mut stream = response.into_inner();
                 while let Some(updated_chats) = stream.message().await.ok().flatten() {
-                    if !updated_chats.added.is_empty() {
-                        for chat in updated_chats.added {
+                    if !updated_chats.updated.is_empty() {
+                        for chat in updated_chats.updated {
                             debug!("chat updated: {:?}", &chat);
                             if let Err(e) = tx_event
                                 .send(Event::Client(ChatRoomEvent::ChatUpdated(chat)))
@@ -324,10 +332,10 @@ impl MigchatClient {
                         }
                     }
                     if !updated_chats.gone.is_empty() {
-                        for chat in updated_chats.gone {
-                            debug!("chat has gone: {:?}", &chat);
+                        for chat_id in updated_chats.gone {
+                            debug!("chat has gone: {}", chat_id);
                             if let Err(e) = tx_event
-                                .send(Event::Client(ChatRoomEvent::ChatDeleted(chat.id)))
+                                .send(Event::Client(ChatRoomEvent::ChatDeleted(chat_id)))
                                 .await
                             {
                                 error!("failed to transfer deleted chat: {}", e);

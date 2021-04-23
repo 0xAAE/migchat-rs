@@ -182,8 +182,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         ChatRoomEvent::Registered(user_id) => {
                                             app.on_registered(user_id);
                                         }
-                                        ChatRoomEvent::UserEntered(user) => {
-                                            app.on_user_entered(user);
+                                        ChatRoomEvent::UserInfo(user) => {
+                                            app.on_user_info(user);
                                         }
                                         ChatRoomEvent::ChatUpdated(chat) => {
                                             app.on_chat_updated(chat);
@@ -196,6 +196,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                         ChatRoomEvent::ChatDeleted(chat_id) => {
                                             app.on_chat_deleted(chat_id);
+                                        }
+                                        ChatRoomEvent::UserEntered(user_id) => {
+                                            app.on_user_entered(user_id);
                                         }
                                         ChatRoomEvent::UserGone(user_id) => {
                                             app.on_user_gone(user_id);
