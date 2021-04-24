@@ -1,7 +1,7 @@
 use futures::Stream; //, StreamExt};
 use fxhash::FxHasher64;
 use log::{debug, error};
-use std::{collections::HashSet, hash::Hasher, ops::Deref, pin::Pin, sync::Arc};
+use std::{collections::BTreeSet, hash::Hasher, ops::Deref, pin::Pin, sync::Arc};
 use tokio::sync::mpsc;
 use tonic::{Request, Response, Status};
 
@@ -507,13 +507,13 @@ impl ChatRoomService for ChatRoomImpl {
         debug!("create_chat(): {:?}", &request);
         let info = request.get_ref();
         let users = if info.auto_enter {
-            // filter out duplicated users
-            let mut tmp = HashSet::with_capacity(info.desired_users.len() + 1);
+            // filter out duplicated users and sort them as well
+            let mut tmp = BTreeSet::new();
             tmp.insert(info.user_id);
             for u in &info.desired_users {
                 tmp.insert(*u);
             }
-            tmp.drain().collect()
+            tmp.into_iter().collect()
         } else {
             Vec::new()
         };
@@ -708,5 +708,36 @@ impl ChatRoomService for ChatRoomImpl {
             ok: true,
             description: String::from("entered the chat"),
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn sorted_users() {
+        let mut collection = BTreeSet::new();
+        collection.insert(10);
+        collection.insert(2);
+        collection.insert(30);
+        collection.insert(30);
+        collection.insert(30);
+        collection.insert(30);
+        collection.insert(30);
+        collection.insert(30);
+        collection.insert(4);
+        collection.insert(4);
+        collection.insert(4);
+        collection.insert(4);
+        collection.insert(4);
+        collection.insert(40);
+        collection.insert(4);
+        collection.insert(30);
+        assert_eq!(collection.len(), 5);
+        assert_eq!(
+            collection.into_iter().collect::<Vec<u64>>(),
+            vec![2, 4, 10, 30, 40]
+        );
     }
 }
