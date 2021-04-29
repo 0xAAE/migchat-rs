@@ -1,3 +1,4 @@
+use chrono::prelude::*;
 use futures::Stream; //, StreamExt};
 use fxhash::FxHasher64;
 use log::{debug, error};
@@ -94,6 +95,7 @@ impl ChatRoomService for ChatRoomImpl {
             id,
             name: user_info.name,
             short_name: user_info.short_name,
+            created: Utc::now().timestamp() as u64,
         };
         // store new user
         if !self
@@ -527,6 +529,7 @@ impl ChatRoomService for ChatRoomImpl {
                     permanent: info.permanent,
                     description: info.description.clone(),
                     users,
+                    created: Utc::now().timestamp() as u64,
                 };
                 if let Err(e) = self.storage.write_chat(id, &chat) {
                     Err(tonic::Status::internal(format!(

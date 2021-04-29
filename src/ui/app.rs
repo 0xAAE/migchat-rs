@@ -121,6 +121,7 @@ impl App {
                 id: NOT_USER_ID,
                 name: user.name,
                 short_name: user.short_name,
+                ..Default::default()
             },
             extended_log,
             tx_command,
@@ -233,7 +234,7 @@ impl App {
                                         user_id: self.user.id,
                                         chat_id,
                                         text: input.text.clone(),
-                                        attachments: Vec::new(),
+                                        ..Default::default()
                                     }))
                                 {
                                     error!("failed creating post: {}", e);

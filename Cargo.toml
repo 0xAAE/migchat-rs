@@ -31,6 +31,7 @@ crossterm = "0.19"
 tui-logger = "0.6"
 jammdb = "0.5"
 bytes = "1.0"
+chrono = "0.4"
 
 [build-dependencies]
 tonic-build = "0.4"
