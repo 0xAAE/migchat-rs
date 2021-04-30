@@ -1,6 +1,7 @@
 use crate::proto::chat_room_service_client::ChatRoomServiceClient;
 use crate::proto::{
     Chat, ChatId, ChatInfo, ChatReference, Invitation, Post, Registration, User, UserId, UserInfo,
+    NOT_USER_ID,
 };
 use crate::Event;
 
@@ -86,7 +87,11 @@ impl MigchatClient {
         info!("logging as {}", &user_info);
         let reg_req = tonic::Request::new(user_info);
         let user_id: UserId = if let Ok(reg_res) = client.register(reg_req).await {
-            let user_id = reg_res.into_inner().user_id;
+            let user_id = if let Some(reg) = reg_res.into_inner().registration {
+                reg.user_id
+            } else {
+                NOT_USER_ID
+            };
             info!("logged successfully");
             if let Err(e) = tx_event
                 .send(Event::Client(ChatRoomEvent::Registered(user_id)))

@@ -8,8 +8,8 @@ use tonic::{Request, Response, Status};
 
 use super::proto::chat_room_service_server::ChatRoomService;
 use super::proto::{
-    ChatInfo, ChatReference, Invitation, Post, Registration, Result as RpcResult, UpdateChats,
-    UpdateUsers, UserInfo, NOT_CHAT_ID, NOT_POST_ID,
+    ChatInfo, ChatReference, Invitation, Post, Registration, RegistrationInfo, Result as RpcResult,
+    UpdateChats, UpdateUsers, UserInfo, NOT_CHAT_ID, NOT_POST_ID,
 };
 use super::{Chat, ChatChanged, ChatRoomImpl, User, UserChanged, UserId};
 
@@ -69,7 +69,10 @@ fn is_chat_visible_for(chat: &Chat, user_id: UserId) -> bool {
 #[tonic::async_trait]
 impl ChatRoomService for ChatRoomImpl {
     #[doc = " Sends a reqistration request"]
-    async fn register(&self, request: Request<UserInfo>) -> Result<Response<Registration>, Status> {
+    async fn register(
+        &self,
+        request: Request<UserInfo>,
+    ) -> Result<Response<RegistrationInfo>, Status> {
         debug!("register(): {:?}", &request);
         let user_info = request.into_inner();
         let id = get_user_id(&user_info);
@@ -87,7 +90,10 @@ impl ChatRoomService for ChatRoomImpl {
                     if !self.notify_user_changed(UserChanged::Online(u.id)).await {
                         self.actualize_user_listeners();
                     }
-                    return Ok(Response::new(Registration { user_id: id }));
+                    return Ok(Response::new(RegistrationInfo {
+                        registration: Some(Registration { user_id: id }),
+                        created: u.created,
+                    }));
                 }
             }
         }
@@ -107,7 +113,10 @@ impl ChatRoomService for ChatRoomImpl {
         if let Err(e) = self.storage.write_user(new_user.id, &new_user) {
             Err(tonic::Status::internal(format!("{}", e)))
         } else {
-            Ok(Response::new(Registration { user_id: id }))
+            Ok(Response::new(RegistrationInfo {
+                registration: Some(Registration { user_id: id }),
+                created: new_user.created,
+            }))
         }
     }
 
