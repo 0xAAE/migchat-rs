@@ -382,6 +382,7 @@ mod tests {
                 user_id: 3,
                 text: String::from("text"),
                 attachments: Vec::new(),
+                created: 0,
             };
             //let res = storage.write_post(&post);
             //assert!(res.is_ok());
@@ -402,7 +403,7 @@ mod tests {
             {
                 let tx = db.tx(true).unwrap();
                 let root_bucket = tx.get_bucket("ROOT").unwrap();
-                let child_bucket = root_bucket.get_or_create_bucket("100").unwrap();
+                let _child_bucket = root_bucket.get_or_create_bucket("100").unwrap();
                 // tx.commit().unwrap();
             }
             // {
