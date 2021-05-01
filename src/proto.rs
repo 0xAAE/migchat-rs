@@ -17,6 +17,24 @@ pub const NOT_CHAT_ID: ChatId = 0;
 #[allow(dead_code)]
 pub const NOT_POST_ID: PostId = 0;
 
+impl Display for User {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let has_name = !self.name.is_empty();
+        let has_short = !self.short_name.is_empty();
+        if has_name {
+            if has_short {
+                write!(f, "{} ({})", self.short_name, self.name)
+            } else {
+                write!(f, "{}", self.name)
+            }
+        } else if has_short {
+            write!(f, "{}", self.short_name)
+        } else {
+            write!(f, "<not set>")
+        }
+    }
+}
+
 impl Display for UserInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let has_name = !self.name.is_empty();
