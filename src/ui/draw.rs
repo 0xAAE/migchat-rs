@@ -86,28 +86,54 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         .chats
         .values()
         .map(|c| {
+            let is_dialog = c.description.is_empty();
+            // 1st line: chat description
+            let chat_desc = if !is_dialog {
+                c.description.clone()
+            } else {
+                // empty header means dialog chat, its name is a countepart's name
+                let mut tmp = String::new();
+                for u in &c.users {
+                    if *u != app.user.id {
+                        if let Some(user) = app.get_user(*u) {
+                            if !tmp.is_empty() {
+                                tmp.push_str(", ");
+                            }
+                            tmp.push_str(&user.short_name);
+                        }
+                    }
+                }
+                tmp
+            };
+            // add posts count to desc
             let posts_count = app.get_posts_count(c.id);
             let chat_header = if posts_count > 0 {
-                format!("{} ({})", c.description, posts_count)
+                format!("{} ({})", chat_desc, posts_count)
             } else {
-                c.description.clone()
+                chat_desc
             };
             let mut lines = vec![Spans::from(Span::styled(chat_header, chats_style))];
-            let mut users = String::from("(");
-            let mut continue_flag = false;
-            for u in &c.users {
-                if continue_flag {
-                    users.push_str(", ");
+            // 2nd line: chat members or 'private'
+            let users = if !is_dialog {
+                let mut tmp = String::from("(");
+                let mut continue_flag = false;
+                for u in &c.users {
+                    if continue_flag {
+                        tmp.push_str(", ");
+                    }
+                    tmp.push_str(
+                        app.get_user(*u)
+                            .map(|u| u.short_name.clone())
+                            .unwrap_or_else(|| format!("{}", u))
+                            .as_str(),
+                    );
+                    continue_flag = true;
                 }
-                users.push_str(
-                    app.get_user(*u)
-                        .map(|u| u.short_name.clone())
-                        .unwrap_or_else(|| format!("{}", u))
-                        .as_str(),
-                );
-                continue_flag = true;
-            }
-            users.push(')');
+                tmp.push(')');
+                tmp
+            } else {
+                String::from("(private)")
+            };
             let users_style = chats_style.add_modifier(Modifier::ITALIC);
             if users.len() > 2 {
                 lines.push(Spans::from(Span::styled(users, users_style)));
