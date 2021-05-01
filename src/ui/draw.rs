@@ -1,4 +1,5 @@
 use super::{App, Widget, WidgetState};
+use chrono::{Local, TimeZone};
 use tui::{
     backend::Backend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -15,6 +16,12 @@ fn get_style(state: WidgetState) -> Style {
         WidgetState::Focused => Style::default().fg(Color::Cyan),
         _ => Style::default().fg(Color::Gray),
     }
+}
+
+fn get_timestamp_text(ts: u64) -> String {
+    let tmp = Local.timestamp(ts as i64, 0);
+    // /let tmp = chrono::DateTime::from_utc(NaiveDateTime::from_timestamp(ts as i64, 0), chrono::TimeZone::from_offset(offset: &Self::Offset));
+    format!("{}", tmp.format("%d.%m.%Y %H:%M"))
 }
 
 pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
@@ -86,28 +93,54 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         .chats
         .values()
         .map(|c| {
+            let is_dialog = c.description.is_empty();
+            // 1st line: chat description
+            let chat_desc = if !is_dialog {
+                c.description.clone()
+            } else {
+                // empty header means dialog chat, its name is a countepart's name
+                let mut tmp = String::new();
+                for u in &c.users {
+                    if *u != app.user.id {
+                        if let Some(user) = app.get_user(*u) {
+                            if !tmp.is_empty() {
+                                tmp.push_str(", ");
+                            }
+                            tmp.push_str(&user.short_name);
+                        }
+                    }
+                }
+                tmp
+            };
+            // add posts count to desc
             let posts_count = app.get_posts_count(c.id);
             let chat_header = if posts_count > 0 {
-                format!("{} ({})", c.description, posts_count)
+                format!("{} ({})", chat_desc, posts_count)
             } else {
-                c.description.clone()
+                chat_desc
             };
             let mut lines = vec![Spans::from(Span::styled(chat_header, chats_style))];
-            let mut users = String::from("(");
-            let mut continue_flag = false;
-            for u in &c.users {
-                if continue_flag {
-                    users.push_str(", ");
+            // 2nd line: chat members or 'private'
+            let users = if !is_dialog {
+                let mut tmp = String::from("(");
+                let mut continue_flag = false;
+                for u in &c.users {
+                    if continue_flag {
+                        tmp.push_str(", ");
+                    }
+                    tmp.push_str(
+                        app.get_user(*u)
+                            .map(|u| u.short_name.clone())
+                            .unwrap_or_else(|| format!("{}", u))
+                            .as_str(),
+                    );
+                    continue_flag = true;
                 }
-                users.push_str(
-                    app.get_user(*u)
-                        .map(|u| u.short_name.clone())
-                        .unwrap_or_else(|| format!("{}", u))
-                        .as_str(),
-                );
-                continue_flag = true;
-            }
-            users.push(')');
+                tmp.push(')');
+                tmp
+            } else {
+                String::from("(private)")
+            };
             let users_style = chats_style.add_modifier(Modifier::ITALIC);
             if users.len() > 2 {
                 lines.push(Spans::from(Span::styled(users, users_style)));
@@ -131,21 +164,28 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             .iter()
             .filter(|post| post.chat_id == chat.id)
             .map(|post| {
-                ListItem::new(Spans::from(vec![
-                    Span::styled(
-                        app.get_user(post.user_id)
-                            .map(|u| {
-                                if u.id == app.user.id {
-                                    String::from("me")
-                                } else {
-                                    u.short_name.clone()
-                                }
-                            })
-                            .unwrap_or_else(|| format!("{}", post.user_id)),
-                        selected_style.add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(format!(": {}", post.text.as_str()), posts_style),
-                ]))
+                let mut author_info: String = app
+                    .get_user(post.user_id)
+                    .map(|u| {
+                        if u.id == app.user.id {
+                            String::from("me")
+                        } else {
+                            u.short_name.clone()
+                        }
+                    })
+                    .unwrap_or_else(|| format!("{}", post.user_id));
+                author_info.push_str(&format!(" ({})", get_timestamp_text(post.created)));
+                let mut lines = vec![Spans::from(Span::styled(
+                    author_info,
+                    selected_style.add_modifier(Modifier::BOLD),
+                ))];
+                for wrapped_text in textwrap::wrap(
+                    &post.text.trim_end_matches("\n"),
+                    (columns[2].width - 4) as usize, // width - "|> " - "|"
+                ) {
+                    lines.push(Spans::from(Span::styled(wrapped_text, posts_style)));
+                }
+                ListItem::new(lines)
             })
             .collect()
     } else {

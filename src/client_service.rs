@@ -221,7 +221,7 @@ impl MigchatClient {
                 while let Some(update_users) = stream.message().await.ok().flatten() {
                     if !update_users.added.is_empty() {
                         for user in update_users.added {
-                            debug!("user info: {:?}", &user);
+                            debug!("user info: {}", &user);
                             if let Err(e) = tx_event
                                 .send(Event::Client(ChatRoomEvent::UserInfo(user)))
                                 .await
