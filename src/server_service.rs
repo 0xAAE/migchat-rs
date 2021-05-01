@@ -481,6 +481,7 @@ impl ChatRoomService for ChatRoomImpl {
             )));
         }
         post.id = new_post_id();
+        post.created = Utc::now().timestamp() as u64;
         if let Err(e) = self.storage.write_post(&post) {
             error!("failed to save post, {}", e);
         }
