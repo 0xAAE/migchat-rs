@@ -1,4 +1,5 @@
 use super::{App, Widget, WidgetState};
+use chrono::{Local, TimeZone};
 use tui::{
     backend::Backend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -15,6 +16,12 @@ fn get_style(state: WidgetState) -> Style {
         WidgetState::Focused => Style::default().fg(Color::Cyan),
         _ => Style::default().fg(Color::Gray),
     }
+}
+
+fn get_timestamp_text(ts: u64) -> String {
+    let tmp = Local.timestamp(ts as i64, 0);
+    // /let tmp = chrono::DateTime::from_utc(NaiveDateTime::from_timestamp(ts as i64, 0), chrono::TimeZone::from_offset(offset: &Self::Offset));
+    format!("{}", tmp.format("%d.%m.%Y %H:%M"))
 }
 
 pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
@@ -157,21 +164,25 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             .iter()
             .filter(|post| post.chat_id == chat.id)
             .map(|post| {
+                let mut author_info: String = app
+                    .get_user(post.user_id)
+                    .map(|u| {
+                        if u.id == app.user.id {
+                            String::from("me")
+                        } else {
+                            u.short_name.clone()
+                        }
+                    })
+                    .unwrap_or_else(|| format!("{}", post.user_id));
+                author_info.push_str(&format!(" ({})", get_timestamp_text(post.created)));
                 let mut lines = vec![Spans::from(Span::styled(
-                    app.get_user(post.user_id)
-                        .map(|u| {
-                            if u.id == app.user.id {
-                                String::from("me")
-                            } else {
-                                u.short_name.clone()
-                            }
-                        })
-                        .unwrap_or_else(|| format!("{}", post.user_id)),
+                    author_info,
                     selected_style.add_modifier(Modifier::BOLD),
                 ))];
-                for wrapped_text in
-                    textwrap::wrap(&post.text.trim_end_matches("\n"), columns[2].width as usize)
-                {
+                for wrapped_text in textwrap::wrap(
+                    &post.text.trim_end_matches("\n"),
+                    (columns[2].width - 4) as usize, // width - "|> " - "|"
+                ) {
                     lines.push(Spans::from(Span::styled(wrapped_text, posts_style)));
                 }
                 ListItem::new(lines)
