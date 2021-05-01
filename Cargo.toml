@@ -32,6 +32,7 @@ tui-logger = "0.6"
 jammdb = "0.5"
 bytes = "1.0"
 chrono = "0.4"
+textwrap = "0.13"
 
 [build-dependencies]
 tonic-build = "0.4"

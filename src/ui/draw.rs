@@ -157,21 +157,24 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             .iter()
             .filter(|post| post.chat_id == chat.id)
             .map(|post| {
-                ListItem::new(Spans::from(vec![
-                    Span::styled(
-                        app.get_user(post.user_id)
-                            .map(|u| {
-                                if u.id == app.user.id {
-                                    String::from("me")
-                                } else {
-                                    u.short_name.clone()
-                                }
-                            })
-                            .unwrap_or_else(|| format!("{}", post.user_id)),
-                        selected_style.add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(format!(": {}", post.text.as_str()), posts_style),
-                ]))
+                let mut lines = vec![Spans::from(Span::styled(
+                    app.get_user(post.user_id)
+                        .map(|u| {
+                            if u.id == app.user.id {
+                                String::from("me")
+                            } else {
+                                u.short_name.clone()
+                            }
+                        })
+                        .unwrap_or_else(|| format!("{}", post.user_id)),
+                    selected_style.add_modifier(Modifier::BOLD),
+                ))];
+                for wrapped_text in
+                    textwrap::wrap(&post.text.trim_end_matches("\n"), columns[2].width as usize)
+                {
+                    lines.push(Spans::from(Span::styled(wrapped_text, posts_style)));
+                }
+                ListItem::new(lines)
             })
             .collect()
     } else {
