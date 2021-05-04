@@ -541,8 +541,7 @@ checksum = "dd25036021b0de88a0aff6b850051563c6516d0bf53f8638938edbb9de732736"
 [[package]]
 name = "jammdb"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19a5a5f8e582f9885410af0b67020d4356c6adf3f6d4eca05267a9b6954338be"
+source = "git+https://github.com/pjtatlow/jammdb.git?branch=check-bucket-dirtiness#16b987eea1a6a574dc71c94b5bc688f1c9884878"
 dependencies = [
  "fs2",
  "memmap",

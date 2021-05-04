@@ -309,14 +309,19 @@ impl Storage {
     // the post's key in the storage is a sequential integer to preserve posts natural order
     pub fn write_post(&self, post: &Post) -> Result<(), InternalError> {
         match self.db.tx(true) {
-            Ok(tx) => match tx.get_or_create_bucket(&post.chat_id.to_le_bytes()) {
-                Ok(chat_bucket) => {
-                    let mut buf = BytesMut::new();
-                    match post.encode(&mut buf) {
-                        Ok(_) => {
-                            let k = chat_bucket.next_int();
-                            match chat_bucket.put(&k.to_le_bytes(), buf) {
-                                Ok(_) => tx.commit().map_err(|e| e.into()),
+            Ok(tx) => match tx.get_or_create_bucket(BUCKET_POSTS) {
+                Ok(posts_bucket) => {
+                    match posts_bucket.get_or_create_bucket(&post.chat_id.to_le_bytes()) {
+                        Ok(chat_bucket) => {
+                            let mut buf = BytesMut::new();
+                            match post.encode(&mut buf) {
+                                Ok(_) => {
+                                    let k = chat_bucket.next_int();
+                                    match chat_bucket.put(&k.to_le_bytes(), buf) {
+                                        Ok(_) => tx.commit().map_err(|e| e.into()),
+                                        Err(e) => Err(e.into()),
+                                    }
+                                }
                                 Err(e) => Err(e.into()),
                             }
                         }
@@ -331,22 +336,25 @@ impl Storage {
 
     pub fn read_chat_posts(&self, chat_id: ChatId) -> Result<Vec<Post>, InternalError> {
         match self.db.tx(false) {
-            Ok(tx) => match tx.get_bucket(&chat_id.to_le_bytes()) {
-                Ok(chat_bucket) => {
-                    let mut posts = Vec::new();
-                    for pair in chat_bucket.kv_pairs() {
-                        let bin = pair.value();
-                        match Post::decode(bin) {
-                            Ok(post) => posts.push(post),
-                            Err(e) => error!("internal error, {}", e),
+            Ok(tx) => match tx.get_bucket(BUCKET_POSTS) {
+                Ok(posts_bucket) => match posts_bucket.get_bucket(&chat_id.to_le_bytes()) {
+                    Ok(chat_bucket) => {
+                        let mut posts = Vec::new();
+                        for pair in chat_bucket.kv_pairs() {
+                            let bin = pair.value();
+                            match Post::decode(bin) {
+                                Ok(post) => posts.push(post),
+                                Err(e) => error!("internal error, {}", e),
+                            }
                         }
+                        Ok(posts)
                     }
-                    Ok(posts)
-                }
-                Err(jammdb::Error::BucketMissing) => {
-                    debug!("there wasn't any posts in requested chat");
-                    Ok(Vec::new())
-                }
+                    Err(jammdb::Error::BucketMissing) => {
+                        debug!("there wasn't any posts in requested chat");
+                        Ok(Vec::new())
+                    }
+                    Err(e) => Err(e.into()),
+                },
                 Err(e) => Err(e.into()),
             },
             Err(e) => Err(e.into()),
@@ -355,10 +363,13 @@ impl Storage {
 
     fn remove_chat_posts(&self, id: ChatId) -> Result<(), InternalError> {
         match self.db.tx(true) {
-            Ok(tx) => tx
-                .delete_bucket(&id.to_le_bytes())
-                .and(tx.commit())
-                .map_err(|e| e.into()),
+            Ok(tx) => match tx.get_bucket(BUCKET_POSTS) {
+                Ok(posts_bucket) => posts_bucket
+                    .delete_bucket(&id.to_le_bytes())
+                    .and(tx.commit())
+                    .map_err(|e| e.into()),
+                Err(e) => Err(e.into()),
+            },
             Err(e) => Err(e.into()),
         }
     }
@@ -370,13 +381,14 @@ mod tests {
     use super::*;
 
     const TEST_DB: &str = "migchat-test-storage.db";
+    const BUCKET_ROOT: &str = "ROOT";
 
     #[test]
     fn test_write_post() {
         let _ = std::fs::remove_file(TEST_DB);
         {
-            let _storage = Storage::new(TEST_DB).unwrap();
-            let _post = Post {
+            let storage = Storage::new(TEST_DB).unwrap();
+            let post = Post {
                 id: 1,
                 chat_id: 2,
                 user_id: 3,
@@ -384,8 +396,8 @@ mod tests {
                 attachments: Vec::new(),
                 created: 0,
             };
-            //let res = storage.write_post(&post);
-            //assert!(res.is_ok());
+            let res = storage.write_post(&post);
+            assert!(res.is_ok());
         }
         let _ = std::fs::remove_file(TEST_DB);
     }
@@ -397,55 +409,58 @@ mod tests {
             let db = jammdb::DB::open(TEST_DB).unwrap();
             {
                 let tx = db.tx(true).unwrap();
-                let _bucket = tx.get_or_create_bucket("ROOT").unwrap();
+                let _bucket = tx.get_or_create_bucket(BUCKET_ROOT).unwrap();
                 tx.commit().unwrap();
             }
             {
                 let tx = db.tx(true).unwrap();
-                let root_bucket = tx.get_bucket("ROOT").unwrap();
-                let _child_bucket = root_bucket.get_or_create_bucket("100").unwrap();
-                // tx.commit().unwrap();
+                let root_bucket = tx.get_bucket(BUCKET_ROOT).unwrap();
+                let _posts_bucket = root_bucket.get_or_create_bucket(BUCKET_POSTS).unwrap();
+                tx.commit().unwrap();
             }
-            // {
-            //     //assert!(child_bucket);
-            //     let mut post = Post {
-            //         id: 1000,
-            //         chat_id: 2000,
-            //         user_id: 3,
-            //         text: String::from("text"),
-            //         attachments: Vec::new(),
-            //     };
+            {
+                let mut post = Post {
+                    id: 1000,
+                    chat_id: 2000,
+                    user_id: 3,
+                    text: String::from("text"),
+                    attachments: Vec::new(),
+                    created: 0,
+                };
 
-            //     match db.tx(true) {
-            //         Ok(tx) => match tx.get_bucket(BUCKET_POSTS) {
-            //             Ok(root_bucket) => {
-            //                 match root_bucket.create_bucket(&post.chat_id.to_le_bytes()) {
-            //                     Ok(chat_bucket) => {
-            //                         let mut buf = BytesMut::new();
-            //                         match post.encode(&mut buf) {
-            //                             Ok(_) => {
-            //                                 assert_eq!(chat_bucket.next_int(), 0);
-            //                                 assert_eq!(chat_bucket.next_int(), 0);
-            //                                 post.id = chat_bucket.next_int();
-            //                                 match chat_bucket.put(&post.id.to_le_bytes(), buf) {
-            //                                     Ok(_) => {
-            //                                         assert_eq!(chat_bucket.next_int(), 1);
-            //                                         //assert!(tx.commit().is_ok());
-            //                                     }
-            //                                     Err(_e) => assert!(false),
-            //                                 }
-            //                             }
-            //                             Err(_e) => assert!(false),
-            //                         }
-            //                     }
-            //                     Err(_e) => assert!(false),
-            //                 }
-            //             }
-            //             Err(_e) => assert!(false),
-            //         },
-            //         Err(_e) => assert!(false),
-            //     };
-            // }
+                match db.tx(true) {
+                    Ok(tx) => match tx.get_bucket(BUCKET_ROOT) {
+                        Ok(root_bucket) => match root_bucket.get_or_create_bucket(BUCKET_POSTS) {
+                            Ok(posts_bucket) => {
+                                match posts_bucket.create_bucket(&post.chat_id.to_le_bytes()) {
+                                    Ok(chat_bucket) => {
+                                        let mut buf = BytesMut::new();
+                                        match post.encode(&mut buf) {
+                                            Ok(_) => {
+                                                assert_eq!(chat_bucket.next_int(), 0);
+                                                assert_eq!(chat_bucket.next_int(), 0);
+                                                post.id = chat_bucket.next_int();
+                                                match chat_bucket.put(&post.id.to_le_bytes(), buf) {
+                                                    Ok(_) => {
+                                                        assert_eq!(chat_bucket.next_int(), 1);
+                                                        assert!(tx.commit().is_ok());
+                                                    }
+                                                    Err(_e) => assert!(false),
+                                                }
+                                            }
+                                            Err(_e) => assert!(false),
+                                        }
+                                    }
+                                    Err(_e) => assert!(false),
+                                }
+                            }
+                            Err(_e) => assert!(false),
+                        },
+                        Err(_e) => assert!(false),
+                    },
+                    Err(_e) => assert!(false),
+                };
+            }
         }
         let _ = std::fs::remove_file(TEST_DB);
     }

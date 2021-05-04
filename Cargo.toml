@@ -29,7 +29,9 @@ config = "0.11"
 tui = { version = "0.14", default-features = false, features = ['crossterm'] }
 crossterm = "0.19"
 tui-logger = "0.6"
-jammdb = "0.5"
+# waiting until; PR https://github.com/pjtatlow/jammdb/pull/10 is accepted:
+#jammdb = "0.5"
+jammdb = { git = "https://github.com/pjtatlow/jammdb.git", branch = "check-bucket-dirtiness" }
 bytes = "1.0"
 chrono = "0.4"
 textwrap = "0.13"
