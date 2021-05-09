@@ -459,7 +459,7 @@ impl ChatRoomService for ChatRoomImpl {
                     break;
                 }
             }
-            debug!("stop streaming chats to {}", user_id);
+            debug!("stream of chats to {} has stopped", user_id);
         });
         // start streaming activity, data consumer
         Ok(Response::new(Box::pin(
