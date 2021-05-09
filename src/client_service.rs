@@ -47,10 +47,12 @@ impl MigchatClient {
 
     pub async fn launch(
         &mut self,
+        server_address: &str,
         tx_event: mpsc::Sender<Event>,
         exit_flag: Arc<AtomicBool>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let channel = Endpoint::from_static("http://0.0.0.0:50051")
+        let remote = String::from(server_address);
+        let channel = Endpoint::from_shared(remote)?
             .timeout(Duration::from_secs(10))
             .connect()
             .await?;
