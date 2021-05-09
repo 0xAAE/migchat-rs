@@ -28,6 +28,7 @@ mod ui;
 use client_service::{ChatRoomEvent, Command, MigchatClient};
 use proto::UserInfo;
 
+const APP_NAME: &str = "migchat";
 const CONFIG: &str = "config";
 const CONFIG_DEF: &str = "client.toml";
 const CONFIG_ENV: &str = "MIGC";
@@ -48,7 +49,7 @@ pub enum Event {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // commnad line
-    let matches = App::new("migchat-client")
+    let matches = App::new(APP_NAME)
         .version("0.1")
         .author("0xAAE <avramenko.a@gmail.com>")
         .about(

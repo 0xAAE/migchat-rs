@@ -1,5 +1,7 @@
+use clap::{App, Arg};
+use config::{Config, Environment, File};
 use env_logger::{fmt::TimestampPrecision, Builder, Env, Target};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use std::{
     collections::{HashMap, HashSet},
     fmt,
@@ -20,6 +22,13 @@ use storage::Storage;
 type InternalError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 mod server_service;
+
+const APP_NAME: &str = "migchat-server";
+const CONFIG: &str = "config";
+const CONFIG_DEF: &str = "migchat-server.toml";
+const CONFIG_ENV: &str = "MIGSRV";
+const DEF_ENDPOINT: &str = "0.0.0.0:50051";
+const DEF_DB_FILE: &str = "migchat_server.db";
 
 #[derive(Clone)]
 enum UserChanged {
@@ -212,13 +221,58 @@ impl fmt::Debug for ChatRoomImpl {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // commnad line
+    let matches = App::new(APP_NAME)
+        .version("0.1")
+        .author("0xAAE <avramenko.a@gmail.com>")
+        .about(
+            "The MiGChat server. Use MIGSRV_* environment variables to override config file settings",
+        )
+        .arg(
+            Arg::with_name(CONFIG)
+                .short("c")
+                .long(CONFIG)
+                .value_name("FILE")
+                .help("Sets a custom config file")
+                .takes_value(true),
+        )
+        .get_matches();
+    let config_file = matches.value_of(CONFIG).unwrap_or(CONFIG_DEF);
+    info!("Using config: {}", config_file);
+
+    // config
+    let mut settings = Config::default();
+    settings
+        // Add in `./Settings.toml`
+        .merge(File::with_name(config_file))
+        .unwrap()
+        // Add in settings from the environment (with a prefix of APP)
+        // Eg.. `APP_DEBUG=1 ./target/app` would set the `debug` key
+        .merge(Environment::with_prefix(CONFIG_ENV))
+        .unwrap();
+
     Builder::from_env(Env::default().default_filter_or("debug,h2=info,tower=info,hyper=info"))
         .target(Target::Stdout)
         .format_timestamp(Some(TimestampPrecision::Seconds))
         .init();
 
-    let addr = "0.0.0.0:50051".parse().unwrap();
-    let chat_room = ChatRoomImpl::new("migchat_server.db")?;
+    let endpoint = if let Ok(addr) = settings.get_str("endpoint") {
+        addr
+    } else {
+        warn!("server connection is not set, use default {}", DEF_ENDPOINT);
+        String::from(DEF_ENDPOINT)
+    };
+
+    let dbfile = if let Ok(name) = settings.get_str("dbfile") {
+        info!("use {} as DB storage", name);
+        name
+    } else {
+        warn!("DB file is not set, use default {}", DEF_DB_FILE);
+        String::from(DEF_DB_FILE)
+    };
+
+    let addr = endpoint.parse().unwrap();
+    let chat_room = ChatRoomImpl::new(dbfile)?;
     info!("Chat room is listening on {}", addr);
 
     let svc = ChatRoomServiceServer::new(chat_room);

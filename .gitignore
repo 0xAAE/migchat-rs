@@ -2,4 +2,5 @@
 /.vscode
 *.sh
 migchat_server.db
+migchat-server.toml
 client*.toml
