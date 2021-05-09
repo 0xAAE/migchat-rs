@@ -9,7 +9,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use log::{error, info, LevelFilter};
+use log::{error, info, warn, LevelFilter};
 use std::{
     io::stdout,
     sync::{
@@ -31,6 +31,7 @@ use proto::UserInfo;
 const CONFIG: &str = "config";
 const CONFIG_DEF: &str = "client.toml";
 const CONFIG_ENV: &str = "MIGC";
+const DEF_SERVER: &str = "http://0.0.0.0:50051";
 
 // Events
 pub enum Event {
@@ -134,8 +135,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // launch client
     let mut client = MigchatClient::new(rx_command);
     let exit_flag_copy = exit_flag.clone();
+    let remote = if let Ok(addr) = settings.get_str("connection") {
+        addr
+    } else {
+        warn!("server connection is not set, use default {}", DEF_SERVER);
+        String::from(DEF_SERVER)
+    };
     let chat_service = tokio::spawn(async move {
-        let _ = client.launch(tx_event, exit_flag_copy).await;
+        let _ = client
+            .launch(remote.as_str(), tx_event, exit_flag_copy)
+            .await;
         println!("chat service stopped");
     });
 
