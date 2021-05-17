@@ -8,8 +8,9 @@ use tonic::{Request, Response, Status};
 
 use super::proto::chat_room_service_server::ChatRoomService;
 use super::proto::{
-    ChatInfo, ChatReference, Invitation, Post, Registration, RegistrationInfo, Result as RpcResult,
-    UpdateChats, UpdateUsers, UserInfo, NOT_CHAT_ID, NOT_POST_ID,
+    ChatHistory, ChatInfo, ChatReference, ChatUpdate, HistoryParams, Invitation, Post,
+    Registration, RegistrationInfo, Result as RpcResult, UpdateChats, UpdateUsers, UserInfo,
+    NOT_CHAT_ID, NOT_POST_ID,
 };
 use super::{Chat, ChatChanged, ChatRoomImpl, User, UserChanged, UserId};
 
@@ -233,32 +234,12 @@ impl ChatRoomService for ChatRoomImpl {
         } else {
             return Err(tonic::Status::internal("no access to posts listeners"));
         }
-        // collect existing posts from chats where user is a member
-        let mut existing = Vec::new();
-        if let Ok(chats) = self.storage.read_all_chats() {
-            for chat in chats {
-                if chat.users.contains(&user_id) {
-                    match self.storage.read_chat_posts(chat.id) {
-                        Ok(mut posts) => existing.append(&mut posts),
-                        Err(e) => error!("failed to read posts, {}", e),
-                    }
-                }
-            }
-        } else {
-            error!("failed to read chats");
-        }
+        // do not collect existing posts from chats where user is a member,
+        // client app must query desired posts itself
         // start permanent listener that streams data to remote client
         let (tx, rx) = mpsc::channel(4);
         tokio::spawn(async move {
             debug!("start streaming posts to {}", user_id);
-            if !existing.is_empty() {
-                // send existing posts
-                for post in existing {
-                    if let Err(e) = tx.send(Ok(post)).await {
-                        error!("failed sending existing post: {}", e);
-                    }
-                }
-            }
             // re-translate new users
             let mut notifier = notifier;
             while let Some(post) = notifier.recv().await {
@@ -409,6 +390,16 @@ impl ChatRoomService for ChatRoomImpl {
         let existing = if let Ok(mut chats) = self.storage.read_all_chats() {
             chats.retain(|c| is_chat_visible_for(&c, user_id));
             chats
+                .drain(..)
+                .map(|c| {
+                    let id = c.id;
+                    ChatUpdate {
+                        chat: Some(c),
+                        currently_posts: self.storage.chat_posts_count(id).unwrap_or_default()
+                            as u64,
+                    }
+                })
+                .collect()
         } else {
             error!("failed to read existing chats");
             Vec::new()
@@ -442,7 +433,10 @@ impl ChatRoomService for ChatRoomImpl {
                         }
                         debug!("re-translating new chat to {}", user_id);
                         UpdateChats {
-                            updated: vec![(*chat).clone()],
+                            updated: vec![ChatUpdate {
+                                chat: Some((*chat).clone()),
+                                currently_posts: 0,
+                            }],
                             gone: Vec::new(),
                         }
                     }
@@ -704,6 +698,23 @@ impl ChatRoomService for ChatRoomImpl {
             ok: true,
             description: String::from("entered the chat"),
         }))
+    }
+
+    #[doc = " Get older posts from the particular chat"]
+    async fn get_chat_history(
+        &self,
+        request: tonic::Request<HistoryParams>,
+    ) -> Result<tonic::Response<ChatHistory>, tonic::Status> {
+        debug!("get_chat_history(): {:?}", &request);
+        let params = request.into_inner();
+        match self.storage.read_chat_posts(
+            params.chat_id,
+            params.idx_from as usize,
+            params.count as usize,
+        ) {
+            Ok(history) => Ok(Response::new(ChatHistory { posts: history })),
+            Err(e) => Err(tonic::Status::internal(format!("{}", e))),
+        }
     }
 }
 

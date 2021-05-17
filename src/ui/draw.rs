@@ -93,14 +93,14 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         .chats
         .values()
         .map(|c| {
-            let is_dialog = c.description.is_empty();
+            let is_dialog = c.chat.description.is_empty();
             // 1st line: chat description
             let chat_desc = if !is_dialog {
-                c.description.clone()
+                c.chat.description.clone()
             } else {
                 // empty header means dialog chat, its name is a countepart's name
                 let mut tmp = String::new();
-                for u in &c.users {
+                for u in &c.chat.users {
                     if *u != app.user.id {
                         if let Some(user) = app.get_user(*u) {
                             if !tmp.is_empty() {
@@ -113,7 +113,7 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                 tmp
             };
             // add posts count to desc
-            let posts_count = app.get_posts_count(c.id);
+            let posts_count = app.get_posts_count(c.chat.id);
             let chat_header = if posts_count > 0 {
                 format!("{} ({})", chat_desc, posts_count)
             } else {
@@ -124,7 +124,7 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             let users = if !is_dialog {
                 let mut tmp = String::from("(");
                 let mut continue_flag = false;
-                for u in &c.users {
+                for u in &c.chat.users {
                     if continue_flag {
                         tmp.push_str(", ");
                     }
@@ -159,43 +159,39 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     //
     // selected chat content
     //
-    let content: Vec<ListItem> = if let Some(chat) = app.get_sel_chat() {
-        app.posts
-            .iter()
-            .filter(|post| post.chat_id == chat.id)
-            .map(|post| {
-                let mut author_info: String = app
-                    .get_user(post.user_id)
-                    .map(|u| {
-                        if u.id == app.user.id {
-                            String::from("me")
-                        } else {
-                            u.short_name.clone()
-                        }
-                    })
-                    .unwrap_or_else(|| format!("{}", post.user_id));
-                author_info.push_str(&format!(" ({})", get_timestamp_text(post.created)));
-                let mut lines = vec![Spans::from(Span::styled(
-                    author_info,
-                    selected_style.add_modifier(Modifier::BOLD),
-                ))];
-                for wrapped_text in textwrap::wrap(
-                    &post.text.trim_end_matches("\n"),
-                    (columns[2].width - 4) as usize, // width - "|> " - "|"
-                ) {
-                    lines.push(Spans::from(Span::styled(wrapped_text, posts_style)));
-                }
-                ListItem::new(lines)
-            })
-            .collect()
-    } else {
-        vec![ListItem::new("select chat to view posts")]
-    };
-    let posts_title = if let Some(chat) = app.get_sel_chat() {
+    let displayed_posts = app.get_sel_posts();
+    let content: Vec<ListItem> = displayed_posts
+        .iter()
+        .map(|post| {
+            let mut author_info: String = app
+                .get_user(post.user_id)
+                .map(|u| {
+                    if u.id == app.user.id {
+                        String::from("me")
+                    } else {
+                        u.short_name.clone()
+                    }
+                })
+                .unwrap_or_else(|| format!("{}", post.user_id));
+            author_info.push_str(&format!(" ({})", get_timestamp_text(post.created)));
+            let mut lines = vec![Spans::from(Span::styled(
+                author_info,
+                selected_style.add_modifier(Modifier::BOLD),
+            ))];
+            for wrapped_text in textwrap::wrap(
+                post.text.trim_end_matches('\n'),
+                (columns[2].width - 4) as usize, // width - left("|> ") - right("|")
+            ) {
+                lines.push(Spans::from(Span::styled(wrapped_text, posts_style)));
+            }
+            ListItem::new(lines)
+        })
+        .collect();
+    let posts_title = if let Some(sel) = app.get_sel_chat() {
         format!(
             "{} ({})",
-            chat.description.clone(),
-            app.get_posts_count(chat.id)
+            sel.chat.description.clone(),
+            sel.get_posts_count()
         )
     } else {
         String::from("No chat selected")
