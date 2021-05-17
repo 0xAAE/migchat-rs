@@ -190,28 +190,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                     Event::Client(chat_event) => match chat_event {
                                         ChatRoomEvent::Registered(user_id) => {
-                                            app.on_registered(user_id);
+                                            app.on_registered(user_id)
                                         }
-                                        ChatRoomEvent::UserInfo(user) => {
-                                            app.on_user_info(user);
-                                        }
-                                        ChatRoomEvent::ChatUpdated(chat, elder_posts) => {
-                                            app.on_chat_updated(chat, elder_posts);
+                                        ChatRoomEvent::UserInfo(user) => app.on_user_info(user),
+                                        ChatRoomEvent::ChatUpdated(chat, history_len) => {
+                                            app.on_chat_updated(chat, history_len)
                                         }
                                         ChatRoomEvent::Invitation(invitation) => {
-                                            app.on_get_invited(invitation);
+                                            app.on_get_invited(invitation)
                                         }
-                                        ChatRoomEvent::NewPost(post) => {
-                                            app.on_new_post(post);
-                                        }
+                                        ChatRoomEvent::NewPost(post) => app.on_new_post(post),
                                         ChatRoomEvent::ChatDeleted(chat_id) => {
-                                            app.on_chat_deleted(chat_id);
+                                            app.on_chat_deleted(chat_id)
                                         }
                                         ChatRoomEvent::UserEntered(user_id) => {
-                                            app.on_user_entered(user_id);
+                                            app.on_user_entered(user_id)
                                         }
                                         ChatRoomEvent::UserGone(user_id) => {
-                                            app.on_user_gone(user_id);
+                                            app.on_user_gone(user_id)
+                                        }
+                                        ChatRoomEvent::History(hist) => {
+                                            app.on_history(hist.chat_id, hist.idx_from, hist.posts)
                                         }
                                     },
                                     Event::Exit => {

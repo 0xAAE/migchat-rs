@@ -703,11 +703,18 @@ impl ChatRoomService for ChatRoomImpl {
     #[doc = " Get older posts from the particular chat"]
     async fn get_chat_history(
         &self,
-        _request: tonic::Request<HistoryParams>,
+        request: tonic::Request<HistoryParams>,
     ) -> Result<tonic::Response<ChatHistory>, tonic::Status> {
-        Err(tonic::Status::unimplemented(
-            "the method is not implemented in the current server version",
-        ))
+        debug!("get_chat_history(): {:?}", &request);
+        let params = request.into_inner();
+        match self.storage.read_chat_posts(
+            params.chat_id,
+            params.idx_from as usize,
+            params.count as usize,
+        ) {
+            Ok(history) => Ok(Response::new(ChatHistory { posts: history })),
+            Err(e) => Err(tonic::Status::internal(format!("{}", e))),
+        }
     }
 }
 

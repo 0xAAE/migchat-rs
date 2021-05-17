@@ -179,7 +179,7 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                 selected_style.add_modifier(Modifier::BOLD),
             ))];
             for wrapped_text in textwrap::wrap(
-                post.text.trim_end_matches("\n"),
+                post.text.trim_end_matches('\n'),
                 (columns[2].width - 4) as usize, // width - left("|> ") - right("|")
             ) {
                 lines.push(Spans::from(Span::styled(wrapped_text, posts_style)));

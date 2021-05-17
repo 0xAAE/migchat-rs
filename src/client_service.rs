@@ -1,7 +1,7 @@
 use crate::proto::chat_room_service_client::ChatRoomServiceClient;
 use crate::proto::{
-    Chat, ChatId, ChatInfo, ChatReference, Invitation, Post, Registration, User, UserId, UserInfo,
-    NOT_USER_ID,
+    Chat, ChatId, ChatInfo, ChatReference, HistoryParams, Invitation, Post, Registration, User,
+    UserId, UserInfo, NOT_USER_ID,
 };
 use crate::Event;
 
@@ -16,24 +16,32 @@ use std::{
 use tokio::sync::mpsc;
 use tonic::transport::{Channel, Endpoint};
 
+pub struct ChatHistory {
+    pub chat_id: ChatId,
+    pub idx_from: usize,
+    pub posts: Vec<Post>,
+}
+
 pub enum ChatRoomEvent {
     Registered(UserId),
     UserInfo(User), // contains user_id, name, short_name
     UserEntered(UserId),
     UserGone(UserId),
-    ChatUpdated(Chat, usize), // chat, elder_posts
+    ChatUpdated(Chat, usize), // chat, history_len
     ChatDeleted(ChatId),
     Invitation(Invitation), // contains user_id, chat_id
     NewPost(Post),          // contains chat_id, user_id, text, [attachments]
+    History(ChatHistory),   // contains requested idx_from, count, history
 }
 
 pub enum Command {
-    Register(UserInfo),   //register on server
-    CreateChat(ChatInfo), // create new chat
-    Invite(Invitation),   // invite user to chat
-    EnterChat(ChatId),    // enter chat specified
-    Post(Post),           // send new post
-    Exit,                 // exit chat room
+    Register(UserInfo),        //register on server
+    CreateChat(ChatInfo),      // create new chat
+    Invite(Invitation),        // invite user to chat
+    EnterChat(ChatId),         // enter chat specified
+    Post(Post),                // send new post
+    Exit,                      // exit chat room
+    GetHistory(HistoryParams), // chat, starting index, count
 }
 
 pub struct MigchatClient {
@@ -197,6 +205,27 @@ impl MigchatClient {
                         }
                         Command::Register(_) => {
                             warn!("user has alredy registered");
+                        }
+                        Command::GetHistory(params) => {
+                            let idx_from = params.idx_from as usize;
+                            let chat_id = params.chat_id;
+                            match client.get_chat_history(params).await {
+                                Ok(response) => {
+                                    if let Err(e) = tx_event
+                                        .send(Event::Client(ChatRoomEvent::History(ChatHistory {
+                                            chat_id,
+                                            idx_from,
+                                            posts: response.into_inner().posts,
+                                        })))
+                                        .await
+                                    {
+                                        error!("failed routing chat history: {}", e);
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("failed getting chat history, {}", e);
+                                }
+                            }
                         }
                     },
                     None => {

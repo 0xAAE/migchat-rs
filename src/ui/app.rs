@@ -70,31 +70,27 @@ pub struct ChatInfo {
     // the chat itself
     pub chat: proto::Chat,
     // count of unreceived yet old posts
-    pub elder_posts: usize,
+    pub history_len: usize,
     // posts
     pub posts: LinkedList<proto::Post>,
 }
 
 impl ChatInfo {
     pub fn get_posts_count(&self) -> usize {
-        self.posts.len() + self.elder_posts
+        self.posts.len() + self.history_len
     }
 
-    fn insert_history(&mut self, idx_from: usize, idx_to: usize, posts: Vec<proto::Post>) {
-        if idx_from > idx_to {
-            error!("reverse order in history is not allowed");
-            return;
-        }
-        let recv_count = idx_to - idx_from;
-        if recv_count > 0 {
+    fn insert_history(&mut self, posts: Vec<proto::Post>) {
+        let cnt = posts.len();
+        if cnt > 0 {
             let mut history: LinkedList<proto::Post> = posts.into_iter().collect();
             history.append(&mut self.posts);
             self.posts = history;
-            if self.elder_posts >= recv_count {
-                self.elder_posts -= recv_count;
+            if self.history_len >= cnt {
+                self.history_len -= cnt;
             } else {
-                warn!("unexpected history size received");
-                self.elder_posts = 0;
+                warn!("unexpected size of history received");
+                self.history_len = 0;
             }
         }
     }
@@ -186,10 +182,18 @@ impl App {
                 Widget::Users => App::list_previous(&mut self.users_state, self.users.len()),
                 Widget::Chats => {
                     App::list_previous(&mut self.chats_state, self.chats.len());
-                    //todo: download elder posts if any
+                    // download elder posts if any
                     if let Some(sel) = self.get_sel_chat() {
-                        if sel.elder_posts > 0 {
-                            //todo: call GetChatHistory() on server
+                        if sel.history_len > 0 {
+                            if let Err(e) = self.tx_command.blocking_send(Command::GetHistory(
+                                proto::HistoryParams {
+                                    chat_id: sel.chat.id,
+                                    idx_from: 0,
+                                    count: sel.history_len as u64,
+                                },
+                            )) {
+                                error!("failed creating chat: {}", e);
+                            }
                         }
                     }
                 }
@@ -214,10 +218,18 @@ impl App {
             Widget::App => match self.focused {
                 Widget::Chats => {
                     App::list_next(&mut self.chats_state, self.chats.len());
-                    //todo: download elder posts if any
+                    //download elder posts if any
                     if let Some(sel) = self.get_sel_chat() {
-                        if sel.elder_posts > 0 {
-                            //todo: call GetChatHistory() on server
+                        if sel.history_len > 0 {
+                            if let Err(e) = self.tx_command.blocking_send(Command::GetHistory(
+                                proto::HistoryParams {
+                                    chat_id: sel.chat.id,
+                                    idx_from: 0,
+                                    count: sel.history_len as u64,
+                                },
+                            )) {
+                                error!("failed creating chat: {}", e);
+                            }
                         }
                     }
                 }
@@ -551,7 +563,15 @@ impl App {
         self.online.retain(|item| *item != id);
     }
 
-    pub fn on_chat_updated(&mut self, chat: proto::Chat, elder_posts: usize) {
+    pub fn on_history(&mut self, chat_id: ChatId, _idx_from: usize, posts: Vec<proto::Post>) {
+        if let Some(chat) = self.chats.get_mut(&chat_id) {
+            chat.insert_history(posts);
+        } else {
+            warn!("get history of unknown chat");
+        }
+    }
+
+    pub fn on_chat_updated(&mut self, chat: proto::Chat, history_len: usize) {
         if let Some(old) = self.chats.get_mut(&chat.id) {
             old.chat = chat;
         } else {
@@ -559,7 +579,7 @@ impl App {
                 chat.id,
                 ChatInfo {
                     chat,
-                    elder_posts,
+                    history_len,
                     posts: LinkedList::new(),
                 },
             );
