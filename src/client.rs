@@ -195,8 +195,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         ChatRoomEvent::UserInfo(user) => {
                                             app.on_user_info(user);
                                         }
-                                        ChatRoomEvent::ChatUpdated(chat) => {
-                                            app.on_chat_updated(chat);
+                                        ChatRoomEvent::ChatUpdated(chat, elder_posts) => {
+                                            app.on_chat_updated(chat, elder_posts);
                                         }
                                         ChatRoomEvent::Invitation(invitation) => {
                                             app.on_get_invited(invitation);

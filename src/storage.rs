@@ -334,13 +334,40 @@ impl Storage {
         }
     }
 
-    pub fn read_chat_posts(&self, chat_id: ChatId) -> Result<Vec<Post>, InternalError> {
+    pub fn chat_posts_count(&self, chat_id: ChatId) -> Result<usize, InternalError> {
+        match self.db.tx(false) {
+            Ok(tx) => match tx.get_bucket(BUCKET_POSTS) {
+                Ok(posts_bucket) => match posts_bucket.get_bucket(&chat_id.to_le_bytes()) {
+                    Ok(chat_bucket) => Ok(chat_bucket.kv_pairs().count()),
+                    Err(jammdb::Error::BucketMissing) => Ok(0),
+                    Err(e) => Err(e.into()),
+                },
+                Err(e) => Err(e.into()),
+            },
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn read_chat_posts(
+        &self,
+        chat_id: ChatId,
+        idx_from: usize,
+        idx_to: usize,
+    ) -> Result<Vec<Post>, InternalError> {
+        // ensure idx_from < idx_to
+        if idx_from >= idx_to {
+            return Err("Illegal index range, idx_from >= idx_to".into());
+        }
         match self.db.tx(false) {
             Ok(tx) => match tx.get_bucket(BUCKET_POSTS) {
                 Ok(posts_bucket) => match posts_bucket.get_bucket(&chat_id.to_le_bytes()) {
                     Ok(chat_bucket) => {
                         let mut posts = Vec::new();
-                        for pair in chat_bucket.kv_pairs() {
+                        for pair in chat_bucket
+                            .kv_pairs()
+                            .skip(idx_from)
+                            .take(idx_to - idx_from)
+                        {
                             let bin = pair.value();
                             match Post::decode(bin) {
                                 Ok(post) => posts.push(post),

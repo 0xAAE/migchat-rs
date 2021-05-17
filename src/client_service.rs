@@ -17,14 +17,14 @@ use tokio::sync::mpsc;
 use tonic::transport::{Channel, Endpoint};
 
 pub enum ChatRoomEvent {
-    Registered(UserId),     // user_id
-    UserInfo(User),         // user_id, name, short_name
-    UserEntered(UserId),    // user_id
-    UserGone(UserId),       // user_id
-    ChatUpdated(Chat),      // chat_id
-    ChatDeleted(ChatId),    // chat_id
-    Invitation(Invitation), // user_id, chat_id
-    NewPost(Post),          // chat_id, user_id, text, [attachments]
+    Registered(UserId),
+    UserInfo(User), // contains user_id, name, short_name
+    UserEntered(UserId),
+    UserGone(UserId),
+    ChatUpdated(Chat, usize), // chat, elder_posts
+    ChatDeleted(ChatId),
+    Invitation(Invitation), // contains user_id, chat_id
+    NewPost(Post),          // contains chat_id, user_id, text, [attachments]
 }
 
 pub enum Command {
@@ -140,6 +140,8 @@ impl MigchatClient {
                                     if let Err(e) = tx_event
                                         .send(Event::Client(ChatRoomEvent::ChatUpdated(
                                             response.into_inner(),
+                                            // just created chat cannot contain elder posts
+                                            0,
                                         )))
                                         .await
                                     {
@@ -328,13 +330,23 @@ impl MigchatClient {
                 let mut stream = response.into_inner();
                 while let Some(updated_chats) = stream.message().await.ok().flatten() {
                     if !updated_chats.updated.is_empty() {
-                        for chat in updated_chats.updated {
-                            debug!("chat updated: {:?}", &chat);
-                            if let Err(e) = tx_event
-                                .send(Event::Client(ChatRoomEvent::ChatUpdated(chat)))
-                                .await
-                            {
-                                error!("failed to transfer updated chat: {}", e);
+                        for update in updated_chats.updated {
+                            debug!(
+                                "chat updated: {:?}, {} elder posts",
+                                &update.chat, update.currently_posts
+                            );
+                            if let Some(chat) = update.chat {
+                                if let Err(e) = tx_event
+                                    .send(Event::Client(ChatRoomEvent::ChatUpdated(
+                                        chat,
+                                        update.currently_posts as usize,
+                                    )))
+                                    .await
+                                {
+                                    error!("failed to transfer updated chat: {}", e);
+                                }
+                            } else {
+                                error!("illegal chat update received, {:?}", update);
                             }
                         }
                     }

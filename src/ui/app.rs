@@ -1,7 +1,7 @@
 use crate::proto::{self, ChatId, UserId, NOT_USER_ID};
 use crate::Command;
 use log::{error, warn};
-use std::collections::HashMap;
+use std::collections::{HashMap, LinkedList};
 use tokio::sync::mpsc;
 use tui::widgets::ListState;
 use tui_logger::{TuiWidgetEvent, TuiWidgetState};
@@ -66,14 +66,51 @@ impl InputMode {
     }
 }
 
+pub struct ChatInfo {
+    // the chat itself
+    pub chat: proto::Chat,
+    // count of unreceived yet old posts
+    pub elder_posts: usize,
+    // posts
+    pub posts: LinkedList<proto::Post>,
+}
+
+impl ChatInfo {
+    pub fn get_posts_count(&self) -> usize {
+        self.posts.len() + self.elder_posts
+    }
+
+    fn insert_history(&mut self, idx_from: usize, idx_to: usize, posts: Vec<proto::Post>) {
+        if idx_from > idx_to {
+            error!("reverse order in history is not allowed");
+            return;
+        }
+        let recv_count = idx_to - idx_from;
+        if recv_count > 0 {
+            let mut history: LinkedList<proto::Post> = posts.into_iter().collect();
+            history.append(&mut self.posts);
+            self.posts = history;
+            if self.elder_posts >= recv_count {
+                self.elder_posts -= recv_count;
+            } else {
+                warn!("unexpected history size received");
+                self.elder_posts = 0;
+            }
+        }
+    }
+
+    fn push(&mut self, post: proto::Post) {
+        self.posts.push_back(post);
+    }
+}
+
 pub struct App {
     pub title: String,
     pub users: Vec<proto::User>,
     pub online: Vec<UserId>,
     pub users_state: ListState,
-    pub chats: HashMap<ChatId, proto::Chat>,
+    pub chats: HashMap<ChatId, ChatInfo>,
     pub chats_state: ListState,
-    pub posts: Vec<proto::Post>,
     pub posts_state: ListState,
     pub logger_state: TuiWidgetState,
     pub user_description: String,
@@ -113,7 +150,6 @@ impl App {
             users_state: ListState::default(),
             chats: HashMap::new(),
             chats_state: ListState::default(),
-            posts: Vec::with_capacity(128),
             posts_state: ListState::default(),
             logger_state: TuiWidgetState::new(),
             user_description: format!("{}", user),
@@ -148,8 +184,22 @@ impl App {
             }
             Widget::App => match self.focused {
                 Widget::Users => App::list_previous(&mut self.users_state, self.users.len()),
-                Widget::Chats => App::list_previous(&mut self.chats_state, self.chats.len()),
-                Widget::Posts => App::list_previous(&mut self.posts_state, self.posts.len()),
+                Widget::Chats => {
+                    App::list_previous(&mut self.chats_state, self.chats.len());
+                    //todo: download elder posts if any
+                    if let Some(sel) = self.get_sel_chat() {
+                        if sel.elder_posts > 0 {
+                            //todo: call GetChatHistory() on server
+                        }
+                    }
+                }
+                Widget::Posts => {
+                    let cnt = self
+                        .get_sel_chat()
+                        .map(|c| c.get_posts_count())
+                        .unwrap_or_default();
+                    App::list_previous(&mut self.posts_state, cnt);
+                }
                 _ => {}
             },
             _ => {}
@@ -162,9 +212,23 @@ impl App {
                 self.logger_state.transition(&TuiWidgetEvent::DownKey);
             }
             Widget::App => match self.focused {
-                Widget::Chats => App::list_next(&mut self.chats_state, self.chats.len()),
+                Widget::Chats => {
+                    App::list_next(&mut self.chats_state, self.chats.len());
+                    //todo: download elder posts if any
+                    if let Some(sel) = self.get_sel_chat() {
+                        if sel.elder_posts > 0 {
+                            //todo: call GetChatHistory() on server
+                        }
+                    }
+                }
                 Widget::Users => App::list_next(&mut self.users_state, self.users.len()),
-                Widget::Posts => App::list_next(&mut self.posts_state, self.posts.len()),
+                Widget::Posts => {
+                    let cnt = self
+                        .get_sel_chat()
+                        .map(|c| c.get_posts_count())
+                        .unwrap_or_default();
+                    App::list_next(&mut self.posts_state, cnt);
+                }
                 _ => {}
             },
             _ => {}
@@ -226,8 +290,8 @@ impl App {
                             }
                         }
                         InputResult::NewPost => {
-                            if let Some(chat) = self.get_sel_chat() {
-                                let chat_id = chat.id;
+                            if let Some(sel) = self.get_sel_chat() {
+                                let chat_id = sel.chat.id;
                                 if let Err(e) =
                                     self.tx_command.blocking_send(Command::Post(proto::Post {
                                         id: proto::NOT_POST_ID,
@@ -358,17 +422,17 @@ impl App {
                             Widget::Users => {
                                 // invite selected user into selected chat
                                 if let Some(user) = self.get_sel_user() {
-                                    if let Some(chat) = self.get_sel_chat() {
+                                    if let Some(sel) = self.get_sel_chat() {
                                         if let Err(e) = self.tx_command.blocking_send(
                                             Command::Invite(proto::Invitation {
-                                                chat_id: chat.id,
+                                                chat_id: sel.chat.id,
                                                 from_user_id: self.user.id,
                                                 to_user_id: user.id,
                                             }),
                                         ) {
                                             error!(
                                                 "failed inviting {} to {}: {}",
-                                                user.short_name, chat.description, e
+                                                user.short_name, sel.chat.description, e
                                             );
                                         }
                                     }
@@ -400,21 +464,32 @@ impl App {
 
     pub fn on_tick(&mut self) {}
 
-    pub fn get_sel_chat(&self) -> Option<&proto::Chat> {
+    pub fn get_sel_chat(&self) -> Option<&ChatInfo> {
         self.chats_state
             .selected()
             .and_then(|idx| self.chats.values().nth(idx))
     }
 
-    pub fn get_chat(&self, chat_id: ChatId) -> Option<&proto::Chat> {
+    pub fn get_sel_posts(&self) -> Vec<proto::Post> {
+        if let Some(sel) = self.get_sel_chat() {
+            let mut ret = Vec::with_capacity(sel.posts.len());
+            for p in &sel.posts {
+                ret.push(p.clone())
+            }
+            ret
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub fn get_chat(&self, chat_id: ChatId) -> Option<&ChatInfo> {
         self.chats.get(&chat_id)
     }
 
     pub fn get_posts_count(&self, chat_id: proto::ChatId) -> usize {
-        self.posts
-            .iter()
-            .filter(|post| post.chat_id == chat_id)
-            .count()
+        self.get_chat(chat_id)
+            .map(|c| c.get_posts_count())
+            .unwrap_or_default()
     }
 
     pub fn get_sel_user(&self) -> Option<&proto::User> {
@@ -476,14 +551,25 @@ impl App {
         self.online.retain(|item| *item != id);
     }
 
-    pub fn on_chat_updated(&mut self, chat: proto::Chat) {
-        let _prev = self.chats.insert(chat.id, chat);
+    pub fn on_chat_updated(&mut self, chat: proto::Chat, elder_posts: usize) {
+        if let Some(old) = self.chats.get_mut(&chat.id) {
+            old.chat = chat;
+        } else {
+            self.chats.insert(
+                chat.id,
+                ChatInfo {
+                    chat,
+                    elder_posts,
+                    posts: LinkedList::new(),
+                },
+            );
+        }
     }
 
     pub fn on_get_invited(&mut self, invitation: proto::Invitation) {
         //todo: ask user about invitation
-        if let Some(chat) = self.get_chat(invitation.chat_id) {
-            if chat.users.iter().any(|u| *u == self.user.id) {
+        if let Some(info) = self.get_chat(invitation.chat_id) {
+            if info.chat.users.iter().any(|u| *u == self.user.id) {
                 warn!("got invitation while being in that chat");
             }
         }
@@ -497,7 +583,12 @@ impl App {
     }
 
     pub fn on_new_post(&mut self, post: proto::Post) {
-        self.posts.push(post);
+        if let Some(found) = self.chats.get_mut(&post.chat_id) {
+            found.push(post);
+        } else {
+            // chat is not found
+            error!("internal, post from unknown chat was received");
+        }
     }
 
     pub fn on_chat_deleted(&mut self, chat_id: ChatId) {
