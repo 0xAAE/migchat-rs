@@ -143,10 +143,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         String::from(DEF_SERVER)
     };
     let chat_service = tokio::spawn(async move {
-        let _ = client
-            .launch(remote.as_str(), tx_event, exit_flag_copy)
-            .await;
-        println!("chat service stopped");
+        let tx_event_copy = tx_event.clone();
+        if !client
+            .launch(remote.as_str(), tx_event_copy, exit_flag_copy)
+            .await
+            .map_err(|e| error!("fatal, {}", e))
+            .is_ok()
+        {
+            let _ = tx_event.send(Event::Exit).await;
+        } else {
+            info!("chat service stopped");
+        }
     });
 
     // launch UI
